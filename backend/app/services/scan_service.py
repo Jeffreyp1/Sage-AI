@@ -52,7 +52,9 @@ class ScanResult:
             "scan_id": self.scan_id,
             "repo_profile": self.repo_profile.to_dict(),
             "packages": [package.to_dict() for package in self.packages],
-            "vulnerabilities": [vulnerability.to_dict() for vulnerability in self.vulnerabilities],
+            "vulnerabilities": [
+                vulnerability.to_public_dict() for vulnerability in self.vulnerabilities
+            ],
             "remediation_tasks": [task.to_dict() for task in self.remediation_tasks],
             "summary": self.summary,
             "errors": self.errors,
@@ -253,4 +255,3 @@ def dedupe_evidence(evidence: List[Dict[str, str]]) -> List[Dict[str, str]]:
         seen.add(key)
         output.append(item)
     return output
-

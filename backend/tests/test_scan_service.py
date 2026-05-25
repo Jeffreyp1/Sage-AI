@@ -51,6 +51,36 @@ class FakeOsvClient:
         return []
 
 
+class UnsafeDetailsOsvClient:
+    def query(self, package_name, version, ecosystem):
+        if package_name != "archive-utils":
+            return []
+        return [
+            {
+                "id": "GHSA-unsafe",
+                "aliases": ["CVE-2025-77777"],
+                "summary": "Archive parsing vulnerability",
+                "details": "PoC: run malicious payload against the vulnerable service",
+                "database_specific": {"severity": "HIGH"},
+                "affected": [
+                    {
+                        "package": {"name": "archive-utils", "ecosystem": "npm"},
+                        "ranges": [
+                            {
+                                "type": "SEMVER",
+                                "events": [{"introduced": "0"}, {"fixed": "2.2.0"}],
+                            }
+                        ],
+                    }
+                ],
+                "references": [
+                    {"type": "ADVISORY", "url": "https://example.test/advisory"},
+                    {"type": "WEB", "url": "https://example.test/PoC.zip"},
+                ],
+            }
+        ]
+
+
 class ScanServiceTest(unittest.TestCase):
     def test_scan_builds_prioritized_remediation_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -111,7 +141,51 @@ class ScanServiceTest(unittest.TestCase):
         ][0]
         self.assertEqual(dev_task.risk["priority"], "P3_MONITOR_DEFER")
 
+    def test_public_scan_output_redacts_raw_advisory_details(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"archive-utils": "2.1.4"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/archive-utils": {"version": "2.1.4"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=UnsafeDetailsOsvClient()).scan_local(str(root))
+
+        output = result.to_dict()
+        vulnerability = output["vulnerabilities"][0]
+        serialized = json.dumps(output)
+        forbidden_keys = []
+
+        def collect_forbidden_keys(value, path=""):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key in {"raw", "details"}:
+                        forbidden_keys.append(path + "." + key if path else key)
+                    collect_forbidden_keys(child, path + "." + key if path else key)
+            if isinstance(value, list):
+                for index, child in enumerate(value):
+                    collect_forbidden_keys(child, "%s[%s]" % (path, index))
+
+        collect_forbidden_keys(output)
+        self.assertNotIn("raw", vulnerability)
+        self.assertNotIn("details", vulnerability)
+        self.assertEqual(forbidden_keys, [])
+        self.assertNotIn("PoC", serialized)
+        self.assertNotIn("malicious payload", serialized)
+        self.assertTrue(vulnerability["details_redacted"])
+
 
 if __name__ == "__main__":
     unittest.main()
-
