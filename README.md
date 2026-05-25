@@ -84,9 +84,10 @@ pytest
 - Local scan endpoint and CLI command
 - Unit tests for parser, OSV client, normalization, risk scoring, and scan flow
 
+Current focus: backend core engine first, with UI intentionally deferred.
+
 ## Security Constraints
 
 VulnSage AI is defensive tooling. It does not generate exploit payloads,
 automate exploitation, scan third-party systems without permission, auto-merge
 patches, or accept risk without human approval.
-
