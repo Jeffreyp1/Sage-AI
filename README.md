@@ -86,6 +86,8 @@ pytest
 
 Current focus: backend core engine first, with UI intentionally deferred.
 
+Next milestone: validate live OSV scans and database persistence.
+
 ## Security Constraints
 
 VulnSage AI is defensive tooling. It does not generate exploit payloads,
