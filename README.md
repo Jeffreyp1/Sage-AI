@@ -88,6 +88,8 @@ Current focus: backend core engine first, with UI intentionally deferred.
 
 Next milestone: validate live OSV scans and database persistence.
 
+This MVP is intentionally CLI/API-first so the security analysis engine stays the priority.
+
 ## Security Constraints
 
 VulnSage AI is defensive tooling. It does not generate exploit payloads,
