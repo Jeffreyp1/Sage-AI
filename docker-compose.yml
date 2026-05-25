@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: vulnsage-postgres
+    environment:
+      POSTGRES_DB: vulnsage
+      POSTGRES_USER: vulnsage
+      POSTGRES_PASSWORD: vulnsage
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vulnsage -d vulnsage"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+
