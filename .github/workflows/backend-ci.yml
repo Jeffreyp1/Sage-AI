@@ -33,6 +33,9 @@ jobs:
       - name: Run deterministic eval harness
         run: python -m app.eval.run_eval
 
+      - name: Run retrieval eval harness
+        run: python -m app.eval.run_retrieval_eval
+
       - name: Generate deterministic demo report
         run: python -m app.eval.generate_demo_report --output "$DEMO_REPORT_PATH"
         env:

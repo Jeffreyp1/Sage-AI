@@ -1,6 +1,6 @@
 import unittest
 
-from app.eval.metrics import exact_match_accuracy, summarize_scores
+from app.eval.metrics import exact_match_accuracy, precision_at_k, summarize_scores
 
 
 class EvalMetricsTest(unittest.TestCase):
@@ -35,6 +35,35 @@ class EvalMetricsTest(unittest.TestCase):
         self.assertEqual(summary["vulnerability_match_accuracy"], 0.75)
         self.assertEqual(summary["fixed_version_accuracy"], 0.5)
         self.assertEqual(summary["finding_count"], 2)
+
+    def test_precision_at_k_scores_ranked_retrieval_ids(self):
+        results = [
+            {"chunk_id": "source-upload"},
+            {"chunk": {"chunk_id": "route-receipts"}},
+            "advisory-archive-utils",
+        ]
+
+        self.assertEqual(
+            precision_at_k(
+                results,
+                expected_ids=["route-receipts", "advisory-archive-utils"],
+                k=2,
+            ),
+            0.5,
+        )
+        self.assertEqual(
+            precision_at_k(
+                results,
+                expected_ids=["route-receipts", "advisory-archive-utils"],
+                k=3,
+            ),
+            2 / 3,
+        )
+
+    def test_precision_at_k_handles_empty_and_invalid_inputs(self):
+        self.assertEqual(precision_at_k([], expected_ids=["missing"], k=5), 0.0)
+        self.assertEqual(precision_at_k(["anything"], expected_ids=[], k=5), 0.0)
+        self.assertEqual(precision_at_k(["anything"], expected_ids=["anything"], k=0), 0.0)
 
 
 if __name__ == "__main__":

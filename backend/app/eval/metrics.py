@@ -18,6 +18,45 @@ def exact_match_accuracy(rows: Sequence[Mapping[str, object]], key: str) -> floa
     return matches / len(rows)
 
 
+def precision_at_k(
+    results: Sequence[object],
+    expected_ids: Sequence[str],
+    k: int,
+) -> float:
+    if len(expected_ids) == 0:
+        return 0.0
+    if k <= 0:
+        return 0.0
+
+    expected = set(expected_ids)
+    limit = min(k, len(results))
+    if limit == 0:
+        return 0.0
+
+    hits = 0
+    for result in results[:limit]:
+        result_id = retrieval_result_id(result)
+        if result_id in expected:
+            hits += 1
+    return hits / k
+
+
+def retrieval_result_id(result: object) -> str | None:
+    if isinstance(result, str):
+        return result
+    if not isinstance(result, Mapping):
+        return None
+    chunk_id = result.get("chunk_id")
+    if isinstance(chunk_id, str):
+        return chunk_id
+    chunk = result.get("chunk")
+    if isinstance(chunk, Mapping):
+        nested_id = chunk.get("chunk_id")
+        if isinstance(nested_id, str):
+            return nested_id
+    return None
+
+
 def score_case(case: Mapping[str, object], report: Mapping[str, object]) -> dict[str, object]:
     from app.eval.verifier import verify_report
 
