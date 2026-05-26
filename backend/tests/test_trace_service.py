@@ -1,4 +1,5 @@
 from app.services.public_safety import contains_unsafe_public_text
+from app.services import trace_service
 from app.services.trace_service import REDACTED, TraceService, redact_trace_value
 
 
@@ -89,6 +90,30 @@ def test_redacts_inline_session_id_variants_under_safe_keys():
     }
 
 
+def test_redacts_session_identifier_keys_recursively():
+    value = {
+        "session_id": "session-value",
+        "sessionid": "compact-session-value",
+        "sid": "short-session-value",
+        "nested": {
+            "Session-ID": "hyphen-session-value",
+            "safe": "session metadata",
+        },
+    }
+
+    redacted = redact_trace_value(value)
+
+    assert redacted == {
+        "session_id": REDACTED,
+        "sessionid": REDACTED,
+        "sid": REDACTED,
+        "nested": {
+            "Session-ID": REDACTED,
+            "safe": "session metadata",
+        },
+    }
+
+
 def test_redacts_secret_cookie_pairs_anywhere_in_cookie_header():
     value = {
         "headers_dump": (
@@ -165,6 +190,32 @@ def test_records_are_stored_in_memory_and_returned_as_copies():
             "cost_usd": None,
             "validation_status": None,
         }
+    ]
+
+
+def test_record_storage_evicts_oldest_records_at_retention_cap(monkeypatch):
+    monkeypatch.setattr(trace_service, "MAX_TRACE_RECORDS", 3, raising=False)
+    service = TraceService()
+
+    for index in range(5):
+        service.record_event(
+            trace_id=f"trace-{index}",
+            agent_name="tool",
+            event_type="tool.result",
+            output_json={"index": index},
+        )
+
+    stored = service.list_records()
+
+    assert [record["trace_id"] for record in stored] == [
+        "trace-2",
+        "trace-3",
+        "trace-4",
+    ]
+    assert [record["output_json"] for record in stored] == [
+        {"index": 2},
+        {"index": 3},
+        {"index": 4},
     ]
 
 

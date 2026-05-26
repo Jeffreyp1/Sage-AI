@@ -15,6 +15,12 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
 REDACTED = "[redacted]"
+MAX_TRACE_RECORDS = 1000
+SECRET_KEY_ALIASES = (
+    "session_id",
+    "sessionid",
+    "sid",
+)
 SECRET_KEY_MARKERS = (
     "token",
     "api_key",
@@ -124,6 +130,7 @@ class TraceService:
             cost_usd=cost_usd,
             validation_status=validation_status,
         )
+        self._evict_records_before_append()
         self._records.append(record)
         return record.to_dict()
 
@@ -132,6 +139,12 @@ class TraceService:
 
     def clear(self) -> None:
         self._records.clear()
+
+    def _evict_records_before_append(self) -> None:
+        if len(self._records) < MAX_TRACE_RECORDS:
+            return
+        records_to_remove = len(self._records) - MAX_TRACE_RECORDS + 1
+        del self._records[:records_to_remove]
 
 
 def redact_trace_value(value: object) -> JsonValue:
@@ -159,6 +172,8 @@ def redact_trace_value(value: object) -> JsonValue:
 def is_secret_key(key: str) -> bool:
     normalized = key.lower().replace("-", "_")
     compact = normalized.replace("_", "")
+    if normalized in SECRET_KEY_ALIASES or compact in SECRET_KEY_ALIASES:
+        return True
     for marker in SECRET_KEY_MARKERS:
         if marker in normalized or marker.replace("_", "") in compact:
             return True

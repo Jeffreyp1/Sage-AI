@@ -1,6 +1,7 @@
 """Safe request and response contracts for future AI providers."""
 
 from dataclasses import asdict, dataclass, field, is_dataclass
+import re
 from typing import Dict, List, Literal, Optional, Protocol, Tuple
 
 
@@ -13,6 +14,7 @@ UNSAFE_RESPONSE_MARKERS = (
     "malicious payload",
     "exploit code",
 )
+POC_MARKER_PATTERN = re.compile(r"(?<![a-z0-9._@/+\-])poc(?![a-z0-9._@/+\-])")
 
 
 class AIProviderError(RuntimeError):
@@ -276,7 +278,7 @@ def validate_finding_summary_response(
     citations, citation_errors = valid_citations(response.citations)
     errors.extend(claim_check_errors)
     errors.extend(citation_errors)
-    claim_ids = {claim.claim_id for claim in claim_checks}
+    claim_ids = {claim.claim_id for claim in claim_checks if isinstance(claim.claim_id, str)}
     allowed_dispositions = set(request.safety_constraints.required_claim_dispositions)
 
     if response.finding_id != request.finding_id:
@@ -310,6 +312,15 @@ def validate_finding_summary_response(
         )
 
     for citation in citations:
+        citation_valid = True
+        if not isinstance(citation.evidence_id, str):
+            errors.append("Citation evidence_id must be a string.")
+            citation_valid = False
+        if not isinstance(citation.claim_id, str):
+            errors.append("Citation claim_id must be a string.")
+            citation_valid = False
+        if not citation_valid:
+            continue
         if citation.evidence_id not in evidence_ids:
             invalid_citation_ids.append(citation.evidence_id)
             errors.append("Citation references unknown evidence id %s." % citation.evidence_id)
@@ -317,6 +328,13 @@ def validate_finding_summary_response(
             errors.append("Citation references unknown claim id %s." % citation.claim_id)
 
     for claim in claim_checks:
+        claim_id_is_string = isinstance(claim.claim_id, str)
+        if not claim_id_is_string:
+            errors.append("Claim claim_id must be a string.")
+
+        if not isinstance(claim.disposition, str):
+            errors.append("Claim %s disposition must be a string." % claim.claim_id)
+            continue
         if claim.disposition not in allowed_dispositions:
             errors.append(
                 "Claim %s uses disallowed disposition %s."
@@ -335,12 +353,14 @@ def validate_finding_summary_response(
             )
 
         if claim.disposition == "unsupported":
-            unsupported_claim_ids.append(claim.claim_id)
+            if claim_id_is_string:
+                unsupported_claim_ids.append(claim.claim_id)
             errors.append("Claim %s is unsupported." % claim.claim_id)
             continue
 
         if claim.disposition in {"fact", "inference"} and len(claim_evidence_ids) == 0:
-            unsupported_claim_ids.append(claim.claim_id)
+            if claim_id_is_string:
+                unsupported_claim_ids.append(claim.claim_id)
             errors.append("Claim %s has no supporting evidence." % claim.claim_id)
 
     if not request.safety_constraints.allow_exploit_steps:
@@ -431,9 +451,15 @@ def unsafe_response_markers(response: AIFindingSummaryResponse) -> List[str]:
     response_text = "\n".join(public_response_strings(response)).lower()
     markers = []
     for marker in UNSAFE_RESPONSE_MARKERS:
-        if marker in response_text:
+        if unsafe_marker_found(marker, response_text):
             markers.append(marker)
     return markers
+
+
+def unsafe_marker_found(marker: str, response_text: str) -> bool:
+    if marker == "poc":
+        return POC_MARKER_PATTERN.search(response_text) is not None
+    return marker in response_text
 
 
 def public_response_strings(value: object) -> List[str]:

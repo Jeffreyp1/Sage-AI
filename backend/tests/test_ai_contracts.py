@@ -80,6 +80,31 @@ class AIContractsTest(unittest.TestCase):
         self.assertTrue(result.blocked)
         self.assertEqual(result.invalid_citation_ids, ["missing-evidence"])
 
+    def test_validation_blocks_non_string_citation_identifiers_without_crashing(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            citations=[
+                Citation(
+                    evidence_id=["ev-advisory"],  # type: ignore[arg-type]
+                    claim_id="claim-fact-1",
+                ),
+                Citation(
+                    evidence_id="ev-advisory",
+                    claim_id={"id": "claim-fact-1"},  # type: ignore[arg-type]
+                ),
+            ],
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertIn("Citation evidence_id must be a string.", result.errors)
+        self.assertIn("Citation claim_id must be a string.", result.errors)
+        self.assertEqual(result.invalid_citation_ids, [])
+
     def test_validation_blocks_missing_citations(self):
         request = finding_request()
         response = MockAIProvider().summarize_finding(request)
@@ -159,6 +184,41 @@ class AIContractsTest(unittest.TestCase):
         self.assertIn("Claim claim-fact-1 evidence_ids must be a list.", result.errors)
         self.assertIn("Claim claim-inference-1 evidence_ids must be a list.", result.errors)
 
+    def test_validation_blocks_non_string_claim_disposition_without_crashing(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            claim_checks=[
+                ClaimCheck(
+                    claim_id="claim-bad-disposition-list",
+                    claim="This claim has a malformed disposition.",
+                    disposition=["fact"],  # type: ignore[arg-type]
+                    evidence_ids=["ev-advisory"],
+                ),
+                ClaimCheck(
+                    claim_id="claim-bad-disposition-dict",
+                    claim="This claim also has a malformed disposition.",
+                    disposition={"value": "fact"},  # type: ignore[arg-type]
+                    evidence_ids=["ev-advisory"],
+                ),
+            ],
+            citations=[],
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertIn(
+            "Claim claim-bad-disposition-list disposition must be a string.",
+            result.errors,
+        )
+        self.assertIn(
+            "Claim claim-bad-disposition-dict disposition must be a string.",
+            result.errors,
+        )
+
     def test_validation_flags_unsupported_claims(self):
         request = finding_request()
         response = MockAIProvider(
@@ -170,6 +230,40 @@ class AIContractsTest(unittest.TestCase):
         self.assertFalse(result.valid)
         self.assertTrue(result.blocked)
         self.assertEqual(result.unsupported_claim_ids, ["claim-unsupported-1"])
+
+    def test_validation_blocks_non_string_unsupported_claim_ids_without_crashing(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            claim_checks=[
+                ClaimCheck(
+                    claim_id=["claim-unsupported"],  # type: ignore[arg-type]
+                    claim="This malformed claim should not crash validation.",
+                    disposition="unsupported",
+                    evidence_ids=[],
+                ),
+                ClaimCheck(
+                    claim_id={"id": "claim-no-evidence"},  # type: ignore[arg-type]
+                    claim="This malformed claim has no supporting evidence.",
+                    disposition="fact",
+                    evidence_ids=[],
+                ),
+            ],
+            citations=[],
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertIn("Claim claim_id must be a string.", result.errors)
+        self.assertIn("Claim ['claim-unsupported'] is unsupported.", result.errors)
+        self.assertIn(
+            "Claim {'id': 'claim-no-evidence'} has no supporting evidence.",
+            result.errors,
+        )
+        self.assertEqual(result.unsupported_claim_ids, [])
 
     def test_validation_rejects_disallowed_dispositions_before_evidence_checks(self):
         request = finding_request()
@@ -240,6 +334,16 @@ class AIContractsTest(unittest.TestCase):
         self.assertIn("AI response contains unsafe marker proof of concept.", result.errors)
         self.assertIn("AI response contains unsafe marker malicious payload.", result.errors)
         self.assertIn("AI response contains unsafe marker exploit code.", result.errors)
+
+    def test_validation_allows_poc_inside_scanner_owned_package_name(self):
+        request = replace(finding_request(), package_name="poc-utils")
+        response = MockAIProvider().summarize_finding(request)
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertTrue(result.valid)
+        self.assertFalse(result.blocked)
+        self.assertNotIn("AI response contains unsafe marker poc.", result.errors)
 
     def test_validation_blocks_scanner_owned_identity_mutation(self):
         request = finding_request()
