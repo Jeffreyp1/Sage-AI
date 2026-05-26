@@ -53,9 +53,18 @@ class FakeScanService:
         return FakeScanResult(repo_path)
 
 
+class FailingScanService:
+    scanned_path = None
+
+    def scan_local(self, repo_path: str):
+        FailingScanService.scanned_path = repo_path
+        raise OSError("cannot read %s" % repo_path)
+
+
 class RepoRoutesTest(unittest.TestCase):
     def setUp(self):
         FakeScanService.scanned_path = None
+        FailingScanService.scanned_path = None
 
     def test_scan_github_rejects_invalid_url(self):
         request = ScanGitHubRequest(url="git@github.com:acme/widget.git", persist=False)
@@ -157,6 +166,32 @@ class RepoRoutesTest(unittest.TestCase):
 
         self.assertEqual(caught.exception.status_code, 502)
         self.assertIn("Unable to clone", caught.exception.detail)
+
+    def test_scan_github_reports_scan_failure_without_temp_path_leak(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir) / "repo"
+            repo_path.mkdir()
+            with (
+                patch("app.api.routes_repos.clone_github_repo", return_value=repo_path),
+                patch("app.api.routes_repos.ScanService", return_value=FailingScanService()),
+                patch("app.api.routes_repos.logger") as logger,
+            ):
+                request = ScanGitHubRequest(url="https://github.com/acme/widget", persist=False)
+                with self.assertRaises(HTTPException) as caught:
+                    scan_github(request, db=None)
+
+            log_call = logger.warning.call_args
+
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail, "Unable to scan GitHub repository.")
+        self.assertNotIn(str(Path(temp_dir).resolve()), caught.exception.detail)
+        self.assertEqual(FailingScanService.scanned_path, str(repo_path))
+        logger.warning.assert_called_once()
+        self.assertEqual(log_call.args[0], "github_scan_failure")
+        self.assertEqual(log_call.kwargs["extra"]["github_owner"], "acme")
+        self.assertEqual(log_call.kwargs["extra"]["github_repo"], "widget")
+        self.assertEqual(log_call.kwargs["extra"]["error_type"], "OSError")
+        self.assertNotIn(str(Path(temp_dir).resolve()), str(log_call))
 
 
 def make_session():
