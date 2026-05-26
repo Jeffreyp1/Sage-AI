@@ -47,8 +47,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as error:
+        print(
+            "Error: unable to write demo report: %s: %s" % (output_path, error),
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -63,6 +73,8 @@ def load_fixture_responses(path: Path) -> dict[str, list[dict[str, object]]]:
         raw_data = path.read_text(encoding="utf-8")
     except FileNotFoundError as error:
         raise ValueError("fixture file not found: %s" % path) from error
+    except OSError as error:
+        raise ValueError("fixture file could not be read: %s: %s" % (path, error)) from error
 
     try:
         data = json.loads(raw_data)
