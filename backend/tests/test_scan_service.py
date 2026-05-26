@@ -208,6 +208,31 @@ class DevNoFixedVersionOsvClient:
         ]
 
 
+class DowngradeOnlyFixedVersionOsvClient:
+    def query(self, package_name, version, ecosystem):
+        if package_name != "archive-utils":
+            return []
+        return [
+            {
+                "id": "GHSA-downgrade-only",
+                "aliases": ["CVE-2026-40404"],
+                "summary": "Archive parsing vulnerability with only a lower fixed version",
+                "database_specific": {"severity": "HIGH"},
+                "affected": [
+                    {
+                        "package": {"name": "archive-utils", "ecosystem": "npm"},
+                        "ranges": [
+                            {
+                                "type": "SEMVER",
+                                "events": [{"introduced": "0"}, {"fixed": "2.2.0"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+
 class ScanServiceTest(unittest.TestCase):
     def test_scan_builds_prioritized_remediation_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -428,6 +453,50 @@ class ScanServiceTest(unittest.TestCase):
         self.assertIsNone(task.patch_plan["target_version"])
         self.assertEqual(task.patch_plan["recommended_action"], "needs_human_review")
         self.assertNotIn("P3_MONITOR_DEFER", " ".join(task.risk["rationale"]))
+
+    def test_downgrade_only_fixed_version_becomes_human_review_without_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src" / "upload").mkdir(parents=True)
+            (root / "src" / "routes").mkdir(parents=True)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"archive-utils": "2.3.0"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/archive-utils": {"version": "2.3.0"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "src" / "upload" / "receiptParser.ts").write_text(
+                'import archiveUtils from "archive-utils";\n'
+                "export function parseReceiptArchive(buffer: Buffer) { return archiveUtils.read(buffer); }\n",
+                encoding="utf-8",
+            )
+            (root / "src" / "routes" / "receipts.ts").write_text(
+                'import { parseReceiptArchive } from "../upload/receiptParser";\n'
+                'router.post("/api/receipts/upload", (request, response) => parseReceiptArchive(request.body));\n',
+                encoding="utf-8",
+            )
+
+            result = ScanService(
+                osv_client=DowngradeOnlyFixedVersionOsvClient()
+            ).scan_local(str(root))
+
+        self.assertEqual(result.summary["deduped_remediation_tasks"], 1)
+        self.assertEqual(result.summary["release_blockers"], 0)
+        self.assertEqual(result.summary["needs_human_review"], 1)
+        task = result.remediation_tasks[0]
+        self.assertEqual(task.risk["priority"], "NEEDS_HUMAN_REVIEW")
+        self.assertIsNone(task.patch_plan["target_version"])
+        self.assertEqual(task.patch_plan["recommended_action"], "needs_human_review")
 
     def test_public_scan_output_redacts_raw_advisory_details(self):
         with tempfile.TemporaryDirectory() as tmp:

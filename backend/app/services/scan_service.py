@@ -28,9 +28,6 @@ PRIORITY_ORDER = {
     "P3_MONITOR_DEFER": 4,
 }
 
-MISSING_FIX_ESCALATION_PRIORITIES = {"P2_SCHEDULE_SOON", "P3_MONITOR_DEFER"}
-
-
 @dataclass
 class RemediationTaskOutput:
     task_id: str
@@ -143,6 +140,11 @@ class ScanService:
             )
 
             for vulnerability in deduped:
+                patch_plan = build_patch_plan(
+                    dependency=dependency,
+                    vulnerability=vulnerability,
+                    test_commands=profile.test_commands,
+                )
                 risk = score_risk(
                     RiskInput(
                         severity=vulnerability.severity,
@@ -152,13 +154,8 @@ class ScanService:
                         reachability=reachability.reachability,
                         dependency_type=dependency.dependency_type,
                         is_direct=dependency.is_direct,
-                        fix_available=bool(vulnerability.fixed_versions),
+                        fix_available=patch_plan.target_version is not None,
                     )
-                )
-                patch_plan = build_patch_plan(
-                    dependency=dependency,
-                    vulnerability=vulnerability,
-                    test_commands=profile.test_commands,
                 )
                 risk = escalate_missing_fix_to_review(risk, patch_plan)
                 tasks.append(
@@ -247,15 +244,14 @@ def build_task_output(
 def escalate_missing_fix_to_review(risk: RiskResult, patch_plan: PatchPlan) -> RiskResult:
     if patch_plan.target_version is not None:
         return risk
-    if risk.priority not in MISSING_FIX_ESCALATION_PRIORITIES:
-        return risk
 
     rationale = [
         item
         for item in risk.rationale
-        if not item.startswith("Risk score ") and item != "No fixed version was identified."
+        if not item.startswith("Risk score ")
+        and item not in {"A fixed version is available.", "No fixed version was identified."}
     ]
-    rationale.append("No fixed version was identified; human review is required.")
+    rationale.append("No valid target version was identified; human review is required.")
     rationale.append(
         "Risk score %s maps to NEEDS_HUMAN_REVIEW because no target version is available."
         % risk.risk_score
