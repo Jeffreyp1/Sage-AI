@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Optional
 
 from app.services.scan_service import ScanService
@@ -25,11 +26,18 @@ def main(argv: Optional[list] = None) -> int:
         action="store_true",
         help="Parse the repository without querying OSV.",
     )
+    scan_parser.add_argument(
+        "--output",
+        help="Write structured JSON output to this file.",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "scan":
         client = OfflineOsvClient() if args.offline else None
         result = ScanService(osv_client=client).scan_local(args.path)
+        if args.output:
+            write_json_output(Path(args.output), result.to_dict())
+            return 0
         if args.json:
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         else:
@@ -48,6 +56,10 @@ def main(argv: Optional[list] = None) -> int:
     return 1
 
 
+def write_json_output(path: Path, report: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 if __name__ == "__main__":
     sys.exit(main())
-
