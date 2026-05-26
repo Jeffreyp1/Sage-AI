@@ -183,18 +183,8 @@ def task_quality_findings(task: Mapping[object, object], index: int) -> list[Val
             )
         )
 
-    if priority is not None and priority != HUMAN_REVIEW_PRIORITY and not has_fix_or_target(task):
-        findings.append(
-            ValidationFinding(
-                severity="critical",
-                code="missing_fix_or_target_version",
-                message=(
-                    "Non-review remediation task must include vulnerability.fixed_versions or "
-                    "patch_plan.target_version"
-                ),
-                path=path,
-            )
-        )
+    if priority is not None and priority != HUMAN_REVIEW_PRIORITY:
+        findings.extend(non_review_patch_target_findings(target_version, path))
 
     return findings
 
@@ -214,18 +204,31 @@ def has_meaningful_evidence(value: object) -> bool:
     return False
 
 
-def has_fix_or_target(task: Mapping[object, object]) -> bool:
-    target_version = string_at(task, "patch_plan.target_version")
-    if target_version is not None and target_version.strip() != "":
-        return True
+def non_review_patch_target_findings(
+    target_version: Optional[str], task_path: str
+) -> list[ValidationFinding]:
+    target_path = "%s.patch_plan.target_version" % task_path
+    if target_version is None or target_version.strip() == "":
+        return [
+            ValidationFinding(
+                severity="critical",
+                code="missing_fix_or_target_version",
+                message="Non-review remediation task must include patch_plan.target_version",
+                path=target_path,
+            )
+        ]
 
-    fixed_versions = value_at(task, "vulnerability.fixed_versions")
-    if not isinstance(fixed_versions, list):
-        return False
-    for version in fixed_versions:
-        if isinstance(version, str) and version.strip() != "":
-            return True
-    return False
+    if parse_version(target_version) is None:
+        return [
+            ValidationFinding(
+                severity="critical",
+                code="invalid_patch_target_version",
+                message="Patch target %s is not a valid semantic version" % target_version,
+                path=target_path,
+            )
+        ]
+
+    return []
 
 
 def forbidden_key_findings(report: Mapping[object, object]) -> list[ValidationFinding]:

@@ -128,6 +128,41 @@ class ReportValidatorTest(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("missing_fix_or_target_version", finding_codes(result))
 
+    def test_detects_non_review_priority_with_fixed_versions_but_no_patch_target(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["package"]["current_version"] = "6.5.2"
+        task["vulnerability"]["fixed_versions"] = ["6.2.4"]
+        task["patch_plan"]["target_version"] = None
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("missing_fix_or_target_version", finding_codes(result))
+
+    def test_detects_p2_patch_target_below_current_version(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["package"]["current_version"] = "6.5.2"
+        task["vulnerability"]["fixed_versions"] = ["6.2.4"]
+        task["risk"]["priority"] = "P2"
+        task["patch_plan"]["target_version"] = "6.2.4"
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("downgrade_patch_target", finding_codes(result))
+
+    def test_detects_non_review_priority_with_invalid_patch_target(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["patch_plan"]["target_version"] = "latest"
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("invalid_patch_target_version", finding_codes(result))
+
     def test_allows_human_review_without_fix_or_target(self):
         report = clean_report()
         task = report["remediation_tasks"][0]
