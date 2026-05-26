@@ -95,6 +95,49 @@ class ReportValidatorTest(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("duplicate_task", finding_codes(result))
 
+    def test_detects_duplicate_task_identity_with_overlapping_alias(self):
+        report = clean_report()
+        first = report["remediation_tasks"][0]
+        first["vulnerability"]["canonical_id"] = "CVE-2025-11111"
+        first["vulnerability"]["source_id"] = "GHSA-source-a"
+        first["vulnerability"]["aliases"] = ["GHSA-SHARED-ALIAS"]
+        duplicate = deepcopy(first)
+        duplicate["vulnerability"]["canonical_id"] = "CVE-2025-22222"
+        duplicate["vulnerability"]["source_id"] = "OSV-source-b"
+        duplicate["vulnerability"]["aliases"] = ["ghsa-shared-alias"]
+        report["remediation_tasks"].append(duplicate)
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("duplicate_task", finding_codes(result))
+
+    def test_allows_same_alias_on_different_package(self):
+        report = clean_report()
+        duplicate = deepcopy(report["remediation_tasks"][0])
+        duplicate["package"]["name"] = "other-archive-utils"
+        duplicate["vulnerability"]["canonical_id"] = "CVE-2025-22222"
+        duplicate["vulnerability"]["source_id"] = "OSV-source-b"
+        duplicate["vulnerability"]["aliases"] = ["GHSA-runtime"]
+        report["remediation_tasks"].append(duplicate)
+
+        result = validate_report(report)
+
+        self.assertTrue(result["passed"])
+
+    def test_allows_same_alias_on_different_current_version(self):
+        report = clean_report()
+        duplicate = deepcopy(report["remediation_tasks"][0])
+        duplicate["package"]["current_version"] = "2.1.5"
+        duplicate["vulnerability"]["canonical_id"] = "CVE-2025-22222"
+        duplicate["vulnerability"]["source_id"] = "OSV-source-b"
+        duplicate["vulnerability"]["aliases"] = ["GHSA-runtime"]
+        report["remediation_tasks"].append(duplicate)
+
+        result = validate_report(report)
+
+        self.assertTrue(result["passed"])
+
     def test_detects_downgrade_patch_target(self):
         report = clean_report()
         task = report["remediation_tasks"][0]

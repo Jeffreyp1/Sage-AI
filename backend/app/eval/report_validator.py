@@ -114,19 +114,34 @@ def remediation_tasks(value: object) -> tuple[TaskList, list[ValidationFinding]]
 
 def duplicate_task_findings(tasks: TaskList) -> list[ValidationFinding]:
     findings: list[ValidationFinding] = []
-    seen: dict[tuple[str, str, str], int] = {}
+    seen: list[tuple[tuple[str, str, str], frozenset[str], int]] = []
 
     for index, task in tasks:
         package_name = string_at(task, "package.name")
+        ecosystem = string_at(task, "package.ecosystem")
         current_version = string_at(task, "package.current_version")
-        canonical_id = string_at(task, "vulnerability.canonical_id")
-        if package_name is None or current_version is None or canonical_id is None:
+        identities = vulnerability_identity_set(task)
+        if (
+            package_name is None
+            or ecosystem is None
+            or current_version is None
+            or not identities
+        ):
             continue
 
-        key = duplicate_task_key(package_name, current_version, canonical_id)
-        first_index = seen.get(key)
-        if first_index is None:
-            seen[key] = index
+        package_key = duplicate_task_key(package_name, ecosystem, current_version)
+        duplicate_index = None
+        for seen_index, (seen_package_key, seen_identities, first_index) in enumerate(seen):
+            if seen_package_key != package_key:
+                continue
+            if not seen_identities.intersection(identities):
+                continue
+            duplicate_index = first_index
+            seen[seen_index] = (seen_package_key, seen_identities | identities, first_index)
+            break
+
+        if duplicate_index is None:
+            seen.append((package_key, identities, index))
             continue
 
         findings.append(
@@ -137,7 +152,12 @@ def duplicate_task_findings(tasks: TaskList) -> list[ValidationFinding]:
                     "Duplicate remediation task for %s@%s %s; first occurrence is "
                     "remediation_tasks[%s]"
                 )
-                % (package_name, current_version, canonical_id, first_index),
+                % (
+                    package_name,
+                    current_version,
+                    duplicate_task_display_identity(task, identities),
+                    duplicate_index,
+                ),
                 path="remediation_tasks[%s]" % index,
             )
         )
@@ -321,13 +341,56 @@ def is_negated_claim(value: str, marker_start: int) -> bool:
 
 
 def duplicate_task_key(
-    package_name: str, current_version: str, canonical_id: str
+    package_name: str, ecosystem: str, current_version: str
 ) -> tuple[str, str, str]:
     return (
         package_name.strip().casefold(),
+        ecosystem.strip().casefold(),
         current_version.strip(),
-        canonical_id.strip().casefold(),
     )
+
+
+def vulnerability_identity_set(task: Mapping[object, object]) -> frozenset[str]:
+    identities: set[str] = set()
+    for path in ("vulnerability.canonical_id", "vulnerability.source_id"):
+        identity = vulnerability_identity(value_at(task, path))
+        if identity is not None:
+            identities.add(identity)
+
+    aliases = value_at(task, "vulnerability.aliases")
+    if isinstance(aliases, list):
+        for alias in aliases:
+            identity = vulnerability_identity(alias)
+            if identity is not None:
+                identities.add(identity)
+
+    return frozenset(identities)
+
+
+def vulnerability_identity(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    identity = value.strip().casefold()
+    if identity == "" or identity == "unknown":
+        return None
+    return identity
+
+
+def duplicate_task_display_identity(
+    task: Mapping[object, object], identities: frozenset[str]
+) -> str:
+    for path in ("vulnerability.canonical_id", "vulnerability.source_id"):
+        value = string_at(task, path)
+        if vulnerability_identity(value) is not None:
+            return value
+
+    aliases = value_at(task, "vulnerability.aliases")
+    if isinstance(aliases, list):
+        for alias in aliases:
+            if vulnerability_identity(alias) is not None:
+                return alias
+
+    return sorted(identities)[0]
 
 
 def walk_strings_with_paths(value: object, path: str = "") -> Iterable[tuple[str, str]]:
