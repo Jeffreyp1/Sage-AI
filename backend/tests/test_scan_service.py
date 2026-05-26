@@ -158,6 +158,31 @@ class DuplicateLockPathOsvClient:
         ]
 
 
+class DirectAndTransitiveOsvClient:
+    def query(self, package_name, version, ecosystem):
+        if package_name != "shared-parser":
+            return []
+        return [
+            {
+                "id": "GHSA-direct-transitive",
+                "aliases": ["CVE-2026-30303"],
+                "summary": "Shared parser duplicate path vulnerability",
+                "database_specific": {"severity": "HIGH"},
+                "affected": [
+                    {
+                        "package": {"name": "shared-parser", "ecosystem": "npm"},
+                        "ranges": [
+                            {
+                                "type": "SEMVER",
+                                "events": [{"introduced": "0"}, {"fixed": "1.2.4"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+
 class DevNoFixedVersionOsvClient:
     def query(self, package_name, version, ecosystem):
         if package_name != "test-bundle-tool":
@@ -304,6 +329,70 @@ class ScanServiceTest(unittest.TestCase):
         self.assertTrue(
             any("parent package parent-b" in claim for claim in claims),
             "expected parent-b dependency path evidence",
+        )
+
+    def test_direct_and_transitive_duplicate_has_coherent_package_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps(
+                    {
+                        "dependencies": {"parent-a": "1.0.0"},
+                        "devDependencies": {"shared-parser": "1.2.3"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/parent-a": {"version": "1.0.0"},
+                            "node_modules/shared-parser": {
+                                "version": "1.2.3",
+                                "dev": True,
+                            },
+                            "node_modules/parent-a/node_modules/shared-parser": {
+                                "version": "1.2.3",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=DirectAndTransitiveOsvClient()).scan_local(str(root))
+
+        self.assertEqual(result.summary["raw_alerts"], 2)
+        self.assertEqual(result.summary["deduped_remediation_tasks"], 1)
+        self.assertEqual(result.summary["priority_counts"], {"P2_SCHEDULE_SOON": 1})
+        task = result.remediation_tasks[0]
+        self.assertEqual(task.package["name"], "shared-parser")
+        self.assertEqual(task.package["current_version"], "1.2.3")
+        self.assertTrue(task.package["is_direct"])
+        self.assertIsNone(task.package["parent_package"])
+        self.assertEqual(task.package["dependency_type"], "devDependency")
+        self.assertEqual(task.vulnerability["canonical_id"], "CVE-2026-30303")
+        self.assertEqual(task.risk["priority"], "P2_SCHEDULE_SOON")
+        self.assertEqual(task.risk["risk_score"], 41)
+
+        claims = [evidence["claim"] for evidence in task.evidence]
+        self.assertTrue(
+            any("node_modules/shared-parser" in claim for claim in claims),
+            "expected direct lockfile path evidence",
+        )
+        self.assertTrue(
+            any(
+                "node_modules/parent-a/node_modules/shared-parser" in claim
+                for claim in claims
+            ),
+            "expected transitive lockfile path evidence",
+        )
+        self.assertTrue(
+            any("parent package parent-a" in claim for claim in claims),
+            "expected transitive dependency path evidence",
         )
 
     def test_no_fixed_version_p3_task_becomes_human_review(self):

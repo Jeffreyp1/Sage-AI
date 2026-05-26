@@ -373,10 +373,17 @@ def merge_package(
     winner: Dict[str, object],
 ) -> Dict[str, object]:
     package = dict(winner)
-    package["is_direct"] = bool(first.get("is_direct")) or bool(second.get("is_direct"))
+    is_direct = bool(first.get("is_direct")) or bool(second.get("is_direct"))
+    package["is_direct"] = is_direct
+    if is_direct:
+        package["parent_package"] = None
+
     dependency_types = [first.get("dependency_type"), second.get("dependency_type")]
     if "dependencies" in dependency_types:
         package["dependency_type"] = "dependencies"
+    elif is_direct and package.get("dependency_type") == "transitive":
+        direct_package = first if first.get("is_direct") else second
+        package["dependency_type"] = direct_package.get("dependency_type")
     return package
 
 
