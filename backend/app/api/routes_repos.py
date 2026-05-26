@@ -1,11 +1,18 @@
 """Repository and scan API routes."""
 
-from fastapi import APIRouter, Depends
+import tempfile
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Package, RemediationTask, Repo, Scan
-from app.schemas.scan import ScanLocalRequest, ScanLocalResponse
+from app.schemas.scan import ScanGitHubRequest, ScanLocalRequest, ScanLocalResponse
+from app.services.github_ingestion import (
+    GitHubCloneError,
+    InvalidGitHubUrlError,
+    clone_github_repo,
+)
 from app.services.persistence import persist_scan_result
 from app.services.scan_service import ScanService
 
@@ -15,6 +22,33 @@ router = APIRouter(prefix="/repos", tags=["repos"])
 @router.post("/scan-local", response_model=ScanLocalResponse)
 def scan_local(request: ScanLocalRequest, db: Session = Depends(get_db)) -> ScanLocalResponse:
     result = ScanService().scan_local(request.path)
+    persisted_scan_id = None
+    if request.persist:
+        scan = persist_scan_result(db, result)
+        persisted_scan_id = scan.id
+    data = result.to_dict()
+    return ScanLocalResponse(
+        scan_id=result.scan_id,
+        persisted_scan_id=persisted_scan_id,
+        repo_profile=data["repo_profile"],
+        summary=data["summary"],
+        remediation_tasks=data["remediation_tasks"],
+        errors=data["errors"],
+    )
+
+
+@router.post("/scan-github", response_model=ScanLocalResponse)
+def scan_github(request: ScanGitHubRequest, db: Session = Depends(get_db)) -> ScanLocalResponse:
+    with tempfile.TemporaryDirectory(prefix="vulnsage-github-") as temp_dir:
+        try:
+            repo_path = clone_github_repo(request.url, temp_dir)
+        except InvalidGitHubUrlError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except GitHubCloneError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        result = ScanService().scan_local(str(repo_path))
+
     persisted_scan_id = None
     if request.persist:
         scan = persist_scan_result(db, result)
@@ -117,4 +151,3 @@ def list_remediation_tasks(repo_id: str, db: Session = Depends(get_db)) -> list:
         }
         for task in tasks
     ]
-

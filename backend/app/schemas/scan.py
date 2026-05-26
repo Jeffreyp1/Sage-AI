@@ -10,6 +10,11 @@ class ScanLocalRequest(BaseModel):
     persist: bool = Field(True, description="Persist scan results to the database.")
 
 
+class ScanGitHubRequest(BaseModel):
+    url: str = Field(..., description="GitHub repository URL to clone and scan.")
+    persist: bool = Field(True, description="Persist scan results to the database.")
+
+
 class ScanLocalResponse(BaseModel):
     scan_id: str
     persisted_scan_id: Optional[str] = None
@@ -17,4 +22,3 @@ class ScanLocalResponse(BaseModel):
     summary: Dict[str, Any]
     remediation_tasks: List[Dict[str, Any]]
     errors: List[str] = []
-
