@@ -1,7 +1,7 @@
 """Persistence adapter for scan results."""
 
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from app.models import (
     Vulnerability,
     VulnerabilityAlias,
 )
+from app.services.dependency_parser import ParsedDependency
 from app.services.scan_service import RemediationTaskOutput, ScanResult
 from app.services.vulnerability_normalizer import NormalizedVulnerability
 
@@ -36,20 +37,15 @@ def persist_scan_result(db: Session, result: ScanResult) -> Scan:
 
     package_models = {}
     for package in result.packages:
-        model = PackageModel(
-            repo_id=repo.id,
-            name=package.name,
-            ecosystem=package.ecosystem,
-            current_version=package.current_version,
-            dependency_type=package.dependency_type,
-            is_direct=package.is_direct,
-            parent_package=package.parent_package,
-            manifest_path=package.manifest_path,
-            lockfile_path=package.lockfile_path,
-        )
-        db.add(model)
-        db.flush()
-        package_models[package_key(package.name, package.current_version, package.parent_package)] = model
+        model = get_or_create_package(db, repo, package)
+        package_models[
+            package_key(
+                package.name,
+                package.ecosystem,
+                package.current_version,
+                package.parent_package,
+            )
+        ] = model
 
     vulnerability_models = {
         vulnerability.canonical_id: get_or_create_vulnerability(db, vulnerability)
@@ -57,52 +53,30 @@ def persist_scan_result(db: Session, result: ScanResult) -> Scan:
     }
 
     for task in result.remediation_tasks:
-        package_model = package_models.get(
-            package_key(
-                str(task.package.get("name")),
-                optional_str(task.package.get("current_version")),
-                optional_str(task.package.get("parent_package")),
-            )
-        )
+        package_model = package_models.get(task_package_key(task))
         vulnerability_model = vulnerability_models.get(
             str(task.vulnerability.get("canonical_id"))
         )
         if package_model is None or vulnerability_model is None:
             continue
-        package_vulnerability = PackageVulnerability(
-            package_id=package_model.id,
-            vulnerability_id=vulnerability_model.id,
-            affected_version=optional_str(task.package.get("current_version")),
-            fixed_versions_json=task.vulnerability.get("fixed_versions", []),
-            is_affected=True,
+        package_vulnerability = get_or_create_package_vulnerability(
+            db,
+            package_model,
+            vulnerability_model,
+            task,
         )
-        db.add(package_vulnerability)
-        db.flush()
+        upsert_reachability_assessment(
+            db,
+            package_vulnerability,
+            task,
+        )
 
-        reachability = ReachabilityAssessment(
-            package_vulnerability_id=package_vulnerability.id,
-            reachability=str(task.risk.get("reachability")),
-            runtime_scope=str(task.risk.get("runtime_scope")),
-            confidence=float(task.risk.get("confidence") or 0.0),
-            evidence_json=task.evidence,
+        remediation_task = get_or_create_current_remediation_task(
+            db,
+            repo,
+            package_vulnerability,
+            task,
         )
-        db.add(reachability)
-
-        remediation_task = RemediationTask(
-            repo_id=repo.id,
-            package_vulnerability_id=package_vulnerability.id,
-            priority=str(task.risk.get("priority")),
-            risk_score=int(task.risk.get("risk_score") or 0),
-            status="open",
-            owner=task.owner,
-            recommended_action=str(task.patch_plan.get("recommended_action")),
-            patch_plan_json=task.patch_plan,
-            test_plan_json=task.test_plan,
-            rollback_plan_json=task.rollback_plan,
-            citations_json=task.evidence,
-        )
-        db.add(remediation_task)
-        db.flush()
         task.task_id = remediation_task.id
 
     db.commit()
@@ -122,7 +96,12 @@ def get_or_create_organization(db: Session, name: str) -> Organization:
 
 def get_or_create_repo(db: Session, organization: Organization, result: ScanResult) -> Repo:
     full_name = "local/%s" % result.repo_profile.repo_name
-    repo = db.query(Repo).filter(Repo.full_name == full_name).one_or_none()
+    repo = (
+        db.query(Repo)
+        .filter(Repo.full_name == full_name)
+        .order_by(Repo.id)
+        .first()
+    )
     if repo is not None:
         repo.language = ", ".join(result.repo_profile.languages)
         repo.service_type = result.repo_profile.service_type
@@ -139,6 +118,45 @@ def get_or_create_repo(db: Session, organization: Organization, result: ScanResu
     db.add(repo)
     db.flush()
     return repo
+
+
+def get_or_create_package(
+    db: Session,
+    repo: Repo,
+    package: ParsedDependency,
+) -> PackageModel:
+    model = (
+        db.query(PackageModel)
+        .filter(
+            PackageModel.repo_id == repo.id,
+            PackageModel.name == package.name,
+            PackageModel.ecosystem == package.ecosystem,
+            PackageModel.current_version == package.current_version,
+            PackageModel.parent_package == package.parent_package,
+        )
+        .order_by(PackageModel.id)
+        .first()
+    )
+    if model is None:
+        model = PackageModel(
+            repo_id=repo.id,
+            name=package.name,
+            ecosystem=package.ecosystem,
+            current_version=package.current_version,
+            parent_package=package.parent_package,
+            dependency_type=package.dependency_type,
+            is_direct=package.is_direct,
+            manifest_path=package.manifest_path,
+            lockfile_path=package.lockfile_path,
+        )
+        db.add(model)
+        db.flush()
+
+    model.dependency_type = package.dependency_type
+    model.is_direct = package.is_direct
+    model.manifest_path = package.manifest_path
+    model.lockfile_path = package.lockfile_path
+    return model
 
 
 def get_or_create_vulnerability(
@@ -187,7 +205,7 @@ def ensure_aliases(
         .all()
     }
     for alias in [vulnerability.source_id] + vulnerability.aliases:
-        if alias in existing:
+        if not alias or alias in existing:
             continue
         db.add(
             VulnerabilityAlias(
@@ -196,6 +214,7 @@ def ensure_aliases(
                 alias_type=alias_type(alias),
             )
         )
+        existing.add(alias)
 
 
 def ensure_references(
@@ -220,6 +239,112 @@ def ensure_references(
                 reference_type=reference.get("type"),
             )
         )
+        existing.add(url)
+
+
+def get_or_create_package_vulnerability(
+    db: Session,
+    package: PackageModel,
+    vulnerability: Vulnerability,
+    task: RemediationTaskOutput,
+) -> PackageVulnerability:
+    affected_version = optional_str(task.package.get("current_version"))
+    model = (
+        db.query(PackageVulnerability)
+        .filter(
+            PackageVulnerability.package_id == package.id,
+            PackageVulnerability.vulnerability_id == vulnerability.id,
+            PackageVulnerability.affected_version == affected_version,
+        )
+        .order_by(PackageVulnerability.id)
+        .first()
+    )
+    if model is None:
+        model = PackageVulnerability(
+            package_id=package.id,
+            vulnerability_id=vulnerability.id,
+            affected_version=affected_version,
+            fixed_versions_json=list_values(task.vulnerability.get("fixed_versions")),
+            is_affected=True,
+        )
+        db.add(model)
+        db.flush()
+
+    model.fixed_versions_json = list_values(task.vulnerability.get("fixed_versions"))
+    model.is_affected = True
+    return model
+
+
+def upsert_reachability_assessment(
+    db: Session,
+    package_vulnerability: PackageVulnerability,
+    task: RemediationTaskOutput,
+) -> ReachabilityAssessment:
+    model = (
+        db.query(ReachabilityAssessment)
+        .filter(ReachabilityAssessment.package_vulnerability_id == package_vulnerability.id)
+        .order_by(ReachabilityAssessment.id)
+        .first()
+    )
+    if model is None:
+        model = ReachabilityAssessment(
+            package_vulnerability_id=package_vulnerability.id,
+            reachability="unknown",
+            runtime_scope="unknown",
+            confidence=0.0,
+            evidence_json=[],
+        )
+        db.add(model)
+        db.flush()
+
+    model.reachability = str(task.risk.get("reachability") or "unknown")
+    model.runtime_scope = str(task.risk.get("runtime_scope") or "unknown")
+    model.confidence = float(task.risk.get("confidence") or 0.0)
+    model.evidence_json = task.evidence
+    return model
+
+
+def get_or_create_current_remediation_task(
+    db: Session,
+    repo: Repo,
+    package_vulnerability: PackageVulnerability,
+    task: RemediationTaskOutput,
+) -> RemediationTask:
+    model = (
+        db.query(RemediationTask)
+        .filter(
+            RemediationTask.repo_id == repo.id,
+            RemediationTask.package_vulnerability_id == package_vulnerability.id,
+            RemediationTask.status == "open",
+        )
+        .order_by(RemediationTask.id)
+        .first()
+    )
+    if model is None:
+        model = RemediationTask(
+            repo_id=repo.id,
+            package_vulnerability_id=package_vulnerability.id,
+            status="open",
+            priority="NEEDS_HUMAN_REVIEW",
+            risk_score=0,
+            recommended_action="review",
+            patch_plan_json={},
+            test_plan_json=[],
+            rollback_plan_json=[],
+            citations_json=[],
+        )
+        db.add(model)
+        db.flush()
+
+    model.priority = str(task.risk.get("priority") or "NEEDS_HUMAN_REVIEW")
+    model.risk_score = int(task.risk.get("risk_score") or 0)
+    model.owner = task.owner
+    model.recommended_action = str(task.patch_plan.get("recommended_action") or "review")
+    model.patch_plan_json = task.patch_plan
+    model.test_plan_json = task.test_plan
+    model.rollback_plan_json = task.rollback_plan
+    model.citations_json = task.evidence
+    return model
 
 
 def parse_datetime(value: Optional[str]):
@@ -241,10 +366,22 @@ def alias_type(alias: str) -> str:
     return "OTHER"
 
 
-def package_key(name: str, version: Optional[str], parent: Optional[str]) -> str:
-    return "%s|%s|%s" % (name, version or "", parent or "")
+def task_package_key(task: RemediationTaskOutput) -> str:
+    return package_key(
+        str(task.package.get("name")),
+        str(task.package.get("ecosystem")),
+        optional_str(task.package.get("current_version")),
+        optional_str(task.package.get("parent_package")),
+    )
+
+
+def package_key(name: str, ecosystem: str, version: Optional[str], parent: Optional[str]) -> str:
+    return "%s|%s|%s|%s" % (name, ecosystem, version or "", parent or "")
 
 
 def optional_str(value: object) -> Optional[str]:
     return value if isinstance(value, str) else None
 
+
+def list_values(value: object) -> list:
+    return value if isinstance(value, list) else []
