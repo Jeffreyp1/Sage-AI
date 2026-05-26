@@ -10,10 +10,12 @@ from app.models import Package, RemediationTask, Repo, Scan
 from app.schemas.scan import ScanGitHubRequest, ScanLocalRequest, ScanLocalResponse
 from app.services.github_ingestion import (
     GitHubCloneError,
+    GitHubRepository,
     InvalidGitHubUrlError,
     clone_github_repo,
+    parse_github_repo_url,
 )
-from app.services.persistence import persist_scan_result
+from app.services.persistence import RepoPersistenceIdentity, persist_scan_result
 from app.services.scan_service import ScanService
 
 router = APIRouter(prefix="/repos", tags=["repos"])
@@ -39,6 +41,11 @@ def scan_local(request: ScanLocalRequest, db: Session = Depends(get_db)) -> Scan
 
 @router.post("/scan-github", response_model=ScanLocalResponse)
 def scan_github(request: ScanGitHubRequest, db: Session = Depends(get_db)) -> ScanLocalResponse:
+    try:
+        repository = parse_github_repo_url(request.url)
+    except InvalidGitHubUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     with tempfile.TemporaryDirectory(prefix="vulnsage-github-") as temp_dir:
         try:
             repo_path = clone_github_repo(request.url, temp_dir)
@@ -51,17 +58,40 @@ def scan_github(request: ScanGitHubRequest, db: Session = Depends(get_db)) -> Sc
 
     persisted_scan_id = None
     if request.persist:
-        scan = persist_scan_result(db, result)
+        scan = persist_scan_result(db, result, repo_identity=github_repo_identity(repository))
         persisted_scan_id = scan.id
     data = result.to_dict()
     return ScanLocalResponse(
         scan_id=result.scan_id,
         persisted_scan_id=persisted_scan_id,
-        repo_profile=data["repo_profile"],
+        repo_profile=github_repo_profile(data["repo_profile"], repository),
         summary=data["summary"],
         remediation_tasks=data["remediation_tasks"],
         errors=data["errors"],
     )
+
+
+def github_repo_identity(repository: GitHubRepository) -> RepoPersistenceIdentity:
+    return RepoPersistenceIdentity(
+        provider="github",
+        name=repository.repo,
+        full_name=repository.full_name,
+        remote_url=repository.clone_url,
+        organization_name=repository.owner,
+    )
+
+
+def github_repo_profile(
+    repo_profile: dict,
+    repository: GitHubRepository,
+) -> dict:
+    github_profile = dict(repo_profile)
+    github_profile["provider"] = "github"
+    github_profile["repo_name"] = repository.repo
+    github_profile["full_name"] = repository.full_name
+    github_profile["remote_url"] = repository.clone_url
+    github_profile["root_path"] = repository.clone_url
+    return github_profile
 
 
 @router.get("")

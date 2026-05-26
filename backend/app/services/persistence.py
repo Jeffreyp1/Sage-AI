@@ -1,5 +1,6 @@
 """Persistence adapter for scan results."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
@@ -22,9 +23,23 @@ from app.services.scan_service import RemediationTaskOutput, ScanResult
 from app.services.vulnerability_normalizer import NormalizedVulnerability
 
 
-def persist_scan_result(db: Session, result: ScanResult) -> Scan:
-    organization = get_or_create_organization(db, "local")
-    repo = get_or_create_repo(db, organization, result)
+@dataclass(frozen=True)
+class RepoPersistenceIdentity:
+    provider: str
+    name: str
+    full_name: str
+    remote_url: Optional[str]
+    organization_name: str
+
+
+def persist_scan_result(
+    db: Session,
+    result: ScanResult,
+    repo_identity: Optional[RepoPersistenceIdentity] = None,
+) -> Scan:
+    identity = repo_identity or local_repo_identity(result)
+    organization = get_or_create_organization(db, identity.organization_name)
+    repo = get_or_create_repo(db, organization, result, identity)
     scan = Scan(
         repo_id=repo.id,
         status="completed",
@@ -84,6 +99,16 @@ def persist_scan_result(db: Session, result: ScanResult) -> Scan:
     return scan
 
 
+def local_repo_identity(result: ScanResult) -> RepoPersistenceIdentity:
+    return RepoPersistenceIdentity(
+        provider="local",
+        name=result.repo_profile.repo_name,
+        full_name="local/%s" % result.repo_profile.repo_name,
+        remote_url=result.repo_profile.root_path,
+        organization_name="local",
+    )
+
+
 def get_or_create_organization(db: Session, name: str) -> Organization:
     organization = db.query(Organization).filter(Organization.name == name).one_or_none()
     if organization is not None:
@@ -94,24 +119,31 @@ def get_or_create_organization(db: Session, name: str) -> Organization:
     return organization
 
 
-def get_or_create_repo(db: Session, organization: Organization, result: ScanResult) -> Repo:
-    full_name = "local/%s" % result.repo_profile.repo_name
+def get_or_create_repo(
+    db: Session,
+    organization: Organization,
+    result: ScanResult,
+    identity: RepoPersistenceIdentity,
+) -> Repo:
     repo = (
         db.query(Repo)
-        .filter(Repo.full_name == full_name)
+        .filter(Repo.provider == identity.provider, Repo.full_name == identity.full_name)
         .order_by(Repo.id)
         .first()
     )
     if repo is not None:
+        repo.org_id = organization.id
+        repo.name = identity.name
+        repo.remote_url = identity.remote_url
         repo.language = ", ".join(result.repo_profile.languages)
         repo.service_type = result.repo_profile.service_type
         return repo
     repo = Repo(
         org_id=organization.id,
-        name=result.repo_profile.repo_name,
-        full_name=full_name,
-        provider="local",
-        remote_url=result.repo_profile.root_path,
+        name=identity.name,
+        full_name=identity.full_name,
+        provider=identity.provider,
+        remote_url=identity.remote_url,
         language=", ".join(result.repo_profile.languages),
         service_type=result.repo_profile.service_type,
     )

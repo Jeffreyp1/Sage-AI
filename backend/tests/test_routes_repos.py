@@ -4,21 +4,44 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
+from app.db import Base
 from app.api.routes_repos import scan_github
+from app.models import Repo
 from app.schemas.scan import ScanGitHubRequest
 from app.services.github_ingestion import GitHubCloneError
+from app.services.repo_ingestion import RepoProfile
 
 
 class FakeScanResult:
     scan_id = "scan-test"
 
+    def __init__(self, repo_path: str = "/tmp/widget") -> None:
+        self.repo_profile = RepoProfile(
+            repo_name=Path(repo_path).name,
+            root_path=repo_path,
+            languages=["TypeScript"],
+            package_managers=["npm"],
+            dependency_files=["package.json"],
+            lockfiles=[],
+            service_type="api",
+            test_commands=["npm test"],
+            codeowners={},
+        )
+        self.packages = []
+        self.vulnerabilities = []
+        self.remediation_tasks = []
+        self.summary = {"deduped_remediation_tasks": 0}
+        self.errors = []
+
     def to_dict(self):
         return {
-            "repo_profile": {"repo_name": "widget", "root_path": "/tmp/widget"},
-            "summary": {"deduped_remediation_tasks": 0},
+            "repo_profile": self.repo_profile.to_dict(),
+            "summary": self.summary,
             "remediation_tasks": [],
-            "errors": [],
+            "errors": self.errors,
         }
 
 
@@ -27,7 +50,7 @@ class FakeScanService:
 
     def scan_local(self, repo_path: str):
         FakeScanService.scanned_path = repo_path
-        return FakeScanResult()
+        return FakeScanResult(repo_path)
 
 
 class RepoRoutesTest(unittest.TestCase):
@@ -64,6 +87,65 @@ class RepoRoutesTest(unittest.TestCase):
         self.assertEqual(response.scan_id, "scan-test")
         self.assertIsNone(response.persisted_scan_id)
 
+    def test_scan_github_response_uses_github_identity_without_temp_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir) / "acme-widget"
+            repo_path.mkdir()
+            with (
+                patch("app.api.routes_repos.clone_github_repo", return_value=repo_path),
+                patch("app.api.routes_repos.ScanService", return_value=FakeScanService()),
+            ):
+                response = scan_github(
+                    ScanGitHubRequest(url="https://github.com/acme/widget", persist=False),
+                    db=None,
+                )
+
+            profile = response.repo_profile
+            self.assertEqual(profile["provider"], "github")
+            self.assertEqual(profile["repo_name"], "widget")
+            self.assertEqual(profile["full_name"], "acme/widget")
+            self.assertEqual(profile["remote_url"], "https://github.com/acme/widget.git")
+            self.assertEqual(profile["root_path"], "https://github.com/acme/widget.git")
+            self.assertNotIn(str(Path(temp_dir).resolve()), str(profile))
+
+    def test_scan_github_persists_owner_scoped_identity_for_same_repo_name(self):
+        db = make_session()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = {
+                "https://github.com/acme/widget": Path(temp_dir) / "acme-widget",
+                "https://github.com/other/widget": Path(temp_dir) / "other-widget",
+            }
+            for path in paths.values():
+                path.mkdir()
+
+            def clone_side_effect(url: str, base_directory: str) -> Path:
+                return paths[url]
+
+            with (
+                patch("app.api.routes_repos.clone_github_repo", side_effect=clone_side_effect),
+                patch("app.api.routes_repos.ScanService", return_value=FakeScanService()),
+            ):
+                first = scan_github(
+                    ScanGitHubRequest(url="https://github.com/acme/widget", persist=True),
+                    db=db,
+                )
+                second = scan_github(
+                    ScanGitHubRequest(url="https://github.com/other/widget", persist=True),
+                    db=db,
+                )
+
+        self.assertIsNotNone(first.persisted_scan_id)
+        self.assertIsNotNone(second.persisted_scan_id)
+        repos = db.query(Repo).order_by(Repo.full_name.asc()).all()
+        self.assertEqual(
+            [(repo.provider, repo.name, repo.full_name, repo.remote_url) for repo in repos],
+            [
+                ("github", "widget", "acme/widget", "https://github.com/acme/widget.git"),
+                ("github", "widget", "other/widget", "https://github.com/other/widget.git"),
+            ],
+        )
+
     def test_scan_github_reports_clone_failure(self):
         with patch(
             "app.api.routes_repos.clone_github_repo",
@@ -75,6 +157,13 @@ class RepoRoutesTest(unittest.TestCase):
 
         self.assertEqual(caught.exception.status_code, 502)
         self.assertIn("Unable to clone", caught.exception.detail)
+
+
+def make_session():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    return session_factory()
 
 
 if __name__ == "__main__":
