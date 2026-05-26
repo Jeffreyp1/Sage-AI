@@ -2,7 +2,7 @@
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from uuid import uuid4
 
 from app.config import get_settings
@@ -19,6 +19,16 @@ from app.services.vulnerability_normalizer import (
     normalize_osv_vulnerability,
     osv_advisory_matches_package,
 )
+
+PRIORITY_ORDER = {
+    "P0_RELEASE_BLOCKER": 0,
+    "P1_FIX_THIS_SPRINT": 1,
+    "NEEDS_HUMAN_REVIEW": 2,
+    "P2_SCHEDULE_SOON": 3,
+    "P3_MONITOR_DEFER": 4,
+}
+
+MISSING_FIX_ESCALATION_PRIORITIES = {"P2_SCHEDULE_SOON", "P3_MONITOR_DEFER"}
 
 
 @dataclass
@@ -150,6 +160,7 @@ class ScanService:
                     vulnerability=vulnerability,
                     test_commands=profile.test_commands,
                 )
+                risk = escalate_missing_fix_to_review(risk, patch_plan)
                 tasks.append(
                     build_task_output(
                         profile=profile,
@@ -162,7 +173,7 @@ class ScanService:
                 )
 
         deduped_all = deduplicate_vulnerabilities(all_vulnerabilities)
-        tasks = sort_tasks(tasks)
+        tasks = sort_tasks(deduplicate_remediation_tasks(tasks))
         summary = build_summary(
             packages=packages,
             vulnerabilities=deduped_all,
@@ -190,7 +201,11 @@ def build_task_output(
     risk: RiskResult,
     patch_plan: PatchPlan,
 ) -> RemediationTaskOutput:
-    evidence = dependency.evidence + reachability.evidence
+    evidence = (
+        dependency.evidence
+        + dependency_location_evidence(dependency)
+        + reachability.evidence
+    )
     return RemediationTaskOutput(
         task_id="task_%s" % uuid4().hex[:12],
         repo=profile.repo_name,
@@ -229,6 +244,266 @@ def build_task_output(
     )
 
 
+def escalate_missing_fix_to_review(risk: RiskResult, patch_plan: PatchPlan) -> RiskResult:
+    if patch_plan.target_version is not None:
+        return risk
+    if risk.priority not in MISSING_FIX_ESCALATION_PRIORITIES:
+        return risk
+
+    rationale = [
+        item
+        for item in risk.rationale
+        if not item.startswith("Risk score ") and item != "No fixed version was identified."
+    ]
+    rationale.append("No fixed version was identified; human review is required.")
+    rationale.append(
+        "Risk score %s maps to NEEDS_HUMAN_REVIEW because no target version is available."
+        % risk.risk_score
+    )
+    return RiskResult(
+        risk_score=risk.risk_score,
+        priority="NEEDS_HUMAN_REVIEW",
+        factors=risk.factors,
+        rationale=rationale,
+    )
+
+
+def dependency_location_evidence(dependency: ParsedDependency) -> List[Dict[str, str]]:
+    evidence = []
+    source = (
+        Path(dependency.lockfile_path).name
+        if dependency.lockfile_path
+        else "package-lock.json"
+    )
+    if dependency.lockfile_entry_path:
+        evidence.append(
+            {
+                "type": "lockfile_entry",
+                "source": source,
+                "claim": "%s@%s is installed at %s"
+                % (
+                    dependency.name,
+                    dependency.current_version or "unknown",
+                    dependency.lockfile_entry_path,
+                ),
+            }
+        )
+    if dependency.parent_package:
+        evidence.append(
+            {
+                "type": "dependency_path",
+                "source": source,
+                "claim": "%s is required through parent package %s"
+                % (dependency.name, dependency.parent_package),
+            }
+        )
+    return evidence
+
+
+def deduplicate_remediation_tasks(
+    tasks: List[RemediationTaskOutput],
+) -> List[RemediationTaskOutput]:
+    deduped: List[RemediationTaskOutput] = []
+    for task in tasks:
+        merged = False
+        for index, existing in enumerate(deduped):
+            if should_merge_tasks(existing, task):
+                deduped[index] = merge_remediation_tasks(existing, task)
+                merged = True
+                break
+        if not merged:
+            deduped.append(task)
+    return deduped
+
+
+def should_merge_tasks(first: RemediationTaskOutput, second: RemediationTaskOutput) -> bool:
+    if first.package.get("name") != second.package.get("name"):
+        return False
+    if first.package.get("ecosystem") != second.package.get("ecosystem"):
+        return False
+    if first.package.get("current_version") != second.package.get("current_version"):
+        return False
+    return bool(task_identity_set(first).intersection(task_identity_set(second)))
+
+
+def merge_remediation_tasks(
+    first: RemediationTaskOutput,
+    second: RemediationTaskOutput,
+) -> RemediationTaskOutput:
+    winner = higher_priority_task(first, second)
+    return RemediationTaskOutput(
+        task_id=winner.task_id,
+        repo=winner.repo,
+        package=merge_package(first.package, second.package, winner.package),
+        vulnerability=merge_vulnerability(
+            first.vulnerability,
+            second.vulnerability,
+            winner.vulnerability,
+        ),
+        risk=merge_risk(first.risk, second.risk, winner.risk),
+        evidence=dedupe_evidence(first.evidence + second.evidence),
+        patch_plan=merge_patch_plan(first.patch_plan, second.patch_plan, winner.patch_plan),
+        test_plan=dedupe_strings(first.test_plan + second.test_plan),
+        rollback_plan=dedupe_strings(first.rollback_plan + second.rollback_plan),
+        owner=winner.owner or first.owner or second.owner,
+        human_approval_required=(
+            first.human_approval_required or second.human_approval_required
+        ),
+    )
+
+
+def higher_priority_task(
+    first: RemediationTaskOutput,
+    second: RemediationTaskOutput,
+) -> RemediationTaskOutput:
+    first_key = (
+        priority_rank(first.risk.get("priority")),
+        -risk_score(first.risk),
+    )
+    second_key = (
+        priority_rank(second.risk.get("priority")),
+        -risk_score(second.risk),
+    )
+    return first if first_key <= second_key else second
+
+
+def merge_package(
+    first: Dict[str, object],
+    second: Dict[str, object],
+    winner: Dict[str, object],
+) -> Dict[str, object]:
+    package = dict(winner)
+    package["is_direct"] = bool(first.get("is_direct")) or bool(second.get("is_direct"))
+    dependency_types = [first.get("dependency_type"), second.get("dependency_type")]
+    if "dependencies" in dependency_types:
+        package["dependency_type"] = "dependencies"
+    return package
+
+
+def merge_vulnerability(
+    first: Dict[str, object],
+    second: Dict[str, object],
+    winner: Dict[str, object],
+) -> Dict[str, object]:
+    vulnerability = dict(winner)
+    vulnerability["aliases"] = sorted(vulnerability_aliases(first) | vulnerability_aliases(second))
+    vulnerability["fixed_versions"] = sorted(
+        vulnerability_versions(first, "fixed_versions")
+        | vulnerability_versions(second, "fixed_versions")
+    )
+    return vulnerability
+
+
+def merge_risk(
+    first: Dict[str, object],
+    second: Dict[str, object],
+    winner: Dict[str, object],
+) -> Dict[str, object]:
+    risk = dict(winner)
+    priority = str(winner.get("priority"))
+    score = max(risk_score(first), risk_score(second))
+    risk["priority"] = priority
+    risk["risk_score"] = score
+    risk["rationale"] = merged_rationale(winner, score, priority)
+    return risk
+
+
+def merge_patch_plan(
+    first: Dict[str, object],
+    second: Dict[str, object],
+    winner: Dict[str, object],
+) -> Dict[str, object]:
+    patch_plan = dict(winner)
+    first_target = first.get("target_version")
+    second_target = second.get("target_version")
+    if patch_plan.get("target_version") is None:
+        patch_plan["target_version"] = first_target or second_target
+    patch_plan["steps"] = dedupe_strings(
+        strings_from_mapping(first, "steps") + strings_from_mapping(second, "steps")
+    )
+    patch_plan["test_plan"] = dedupe_strings(
+        strings_from_mapping(first, "test_plan") + strings_from_mapping(second, "test_plan")
+    )
+    patch_plan["rollback_plan"] = dedupe_strings(
+        strings_from_mapping(first, "rollback_plan")
+        + strings_from_mapping(second, "rollback_plan")
+    )
+    return patch_plan
+
+
+def task_identity_set(task: RemediationTaskOutput) -> Set[str]:
+    vulnerability = task.vulnerability
+    identities = {
+        value
+        for value in [
+            vulnerability.get("canonical_id"),
+            vulnerability.get("source_id"),
+        ]
+        if isinstance(value, str) and value and value != "UNKNOWN"
+    }
+    aliases = vulnerability.get("aliases", [])
+    if isinstance(aliases, list):
+        for alias in aliases:
+            if isinstance(alias, str) and alias and alias != "UNKNOWN":
+                identities.add(alias)
+    return identities
+
+
+def vulnerability_aliases(vulnerability: Dict[str, object]) -> Set[str]:
+    aliases = vulnerability.get("aliases", [])
+    if not isinstance(aliases, list):
+        return set()
+    return {alias for alias in aliases if isinstance(alias, str) and alias}
+
+
+def vulnerability_versions(vulnerability: Dict[str, object], key: str) -> Set[str]:
+    versions = vulnerability.get(key, [])
+    if not isinstance(versions, list):
+        return set()
+    return {version for version in versions if isinstance(version, str) and version}
+
+
+def merged_rationale(risk: Dict[str, object], score: int, priority: str) -> List[str]:
+    rationale = [
+        item
+        for item in strings_from_mapping(risk, "rationale")
+        if not item.startswith("Risk score ")
+    ]
+    rationale.append(
+        "Merged duplicate findings; highest risk score %s maps to %s." % (score, priority)
+    )
+    return rationale
+
+
+def strings_from_mapping(mapping: Dict[str, object], key: str) -> List[str]:
+    values = mapping.get(key, [])
+    if not isinstance(values, list):
+        return []
+    return [value for value in values if isinstance(value, str)]
+
+
+def dedupe_strings(values: List[str]) -> List[str]:
+    seen = set()
+    output = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return output
+
+
+def priority_rank(priority: object) -> int:
+    return PRIORITY_ORDER.get(str(priority), 99)
+
+
+def risk_score(risk: Dict[str, object]) -> int:
+    value = risk.get("risk_score", 0)
+    if isinstance(value, int):
+        return value
+    return 0
+
+
 def build_summary(
     packages: List[ParsedDependency],
     vulnerabilities: List[NormalizedVulnerability],
@@ -256,18 +531,11 @@ def build_summary(
 
 
 def sort_tasks(tasks: List[RemediationTaskOutput]) -> List[RemediationTaskOutput]:
-    priority_order = {
-        "P0_RELEASE_BLOCKER": 0,
-        "P1_FIX_THIS_SPRINT": 1,
-        "NEEDS_HUMAN_REVIEW": 2,
-        "P2_SCHEDULE_SOON": 3,
-        "P3_MONITOR_DEFER": 4,
-    }
     return sorted(
         tasks,
         key=lambda task: (
-            priority_order.get(str(task.risk.get("priority")), 99),
-            -int(task.risk.get("risk_score", 0)),
+            priority_rank(task.risk.get("priority")),
+            -risk_score(task.risk),
             str(task.package.get("name")),
         ),
     )

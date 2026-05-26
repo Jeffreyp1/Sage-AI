@@ -133,6 +133,56 @@ class UnsafeSummaryOsvClient:
         ]
 
 
+class DuplicateLockPathOsvClient:
+    def query(self, package_name, version, ecosystem):
+        if package_name != "shared-parser":
+            return []
+        return [
+            {
+                "id": "GHSA-shared-parser",
+                "aliases": ["CVE-2026-10101"],
+                "summary": "Shared parser vulnerability",
+                "database_specific": {"severity": "HIGH"},
+                "affected": [
+                    {
+                        "package": {"name": "shared-parser", "ecosystem": "npm"},
+                        "ranges": [
+                            {
+                                "type": "SEMVER",
+                                "events": [{"introduced": "0"}, {"fixed": "1.2.4"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+
+class DevNoFixedVersionOsvClient:
+    def query(self, package_name, version, ecosystem):
+        if package_name != "test-bundle-tool":
+            return []
+        return [
+            {
+                "id": "GHSA-dev-no-fix",
+                "aliases": ["CVE-2026-20202"],
+                "summary": "Dev tooling vulnerability without a fix",
+                "database_specific": {"severity": "CRITICAL"},
+                "affected": [
+                    {
+                        "package": {"name": "test-bundle-tool", "ecosystem": "npm"},
+                        "ranges": [
+                            {
+                                "type": "SEMVER",
+                                "events": [{"introduced": "0"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+
 class ScanServiceTest(unittest.TestCase):
     def test_scan_builds_prioritized_remediation_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -193,6 +243,102 @@ class ScanServiceTest(unittest.TestCase):
             task for task in result.remediation_tasks if task.package["name"] == "test-bundle-tool"
         ][0]
         self.assertEqual(dev_task.risk["priority"], "P3_MONITOR_DEFER")
+
+    def test_duplicate_tasks_from_multiple_lockfile_paths_are_collapsed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"parent-a": "1.0.0", "parent-b": "1.0.0"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/parent-a": {"version": "1.0.0"},
+                            "node_modules/parent-a/node_modules/shared-parser": {
+                                "version": "1.2.3",
+                            },
+                            "node_modules/parent-b": {"version": "1.0.0"},
+                            "node_modules/parent-b/node_modules/shared-parser": {
+                                "version": "1.2.3",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=DuplicateLockPathOsvClient()).scan_local(str(root))
+
+        self.assertEqual(result.summary["raw_alerts"], 2)
+        self.assertEqual(result.summary["deduped_remediation_tasks"], 1)
+        self.assertEqual(result.summary["priority_counts"], {"P2_SCHEDULE_SOON": 1})
+        task = result.remediation_tasks[0]
+        self.assertEqual(task.package["name"], "shared-parser")
+        self.assertEqual(task.package["current_version"], "1.2.3")
+        self.assertEqual(task.vulnerability["canonical_id"], "CVE-2026-10101")
+        self.assertEqual(task.risk["priority"], "P2_SCHEDULE_SOON")
+
+        claims = [evidence["claim"] for evidence in task.evidence]
+        self.assertTrue(
+            any(
+                "node_modules/parent-a/node_modules/shared-parser" in claim
+                for claim in claims
+            ),
+            "expected parent-a lockfile path evidence",
+        )
+        self.assertTrue(
+            any(
+                "node_modules/parent-b/node_modules/shared-parser" in claim
+                for claim in claims
+            ),
+            "expected parent-b lockfile path evidence",
+        )
+        self.assertTrue(
+            any("parent package parent-a" in claim for claim in claims),
+            "expected parent-a dependency path evidence",
+        )
+        self.assertTrue(
+            any("parent package parent-b" in claim for claim in claims),
+            "expected parent-b dependency path evidence",
+        )
+
+    def test_no_fixed_version_p3_task_becomes_human_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"devDependencies": {"test-bundle-tool": "1.0.0"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/test-bundle-tool": {
+                                "version": "1.0.0",
+                                "dev": True,
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=DevNoFixedVersionOsvClient()).scan_local(str(root))
+
+        self.assertEqual(result.summary["deduped_remediation_tasks"], 1)
+        self.assertEqual(result.summary["safe_to_defer"], 0)
+        self.assertEqual(result.summary["needs_human_review"], 1)
+        task = result.remediation_tasks[0]
+        self.assertEqual(task.risk["priority"], "NEEDS_HUMAN_REVIEW")
+        self.assertIsNone(task.patch_plan["target_version"])
+        self.assertEqual(task.patch_plan["recommended_action"], "needs_human_review")
+        self.assertNotIn("P3_MONITOR_DEFER", " ".join(task.risk["rationale"]))
 
     def test_public_scan_output_redacts_raw_advisory_details(self):
         with tempfile.TemporaryDirectory() as tmp:
