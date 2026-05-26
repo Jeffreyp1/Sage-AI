@@ -68,6 +68,18 @@ def finding_codes(result):
     return {finding["code"] for finding in result["findings"]}
 
 
+def add_alias_overlap_duplicate(report):
+    first = report["remediation_tasks"][0]
+    first["vulnerability"]["canonical_id"] = "CVE-2025-11111"
+    first["vulnerability"]["source_id"] = "GHSA-source-a"
+    first["vulnerability"]["aliases"] = ["GHSA-SHARED-ALIAS"]
+    duplicate = deepcopy(first)
+    duplicate["vulnerability"]["canonical_id"] = "CVE-2025-22222"
+    duplicate["vulnerability"]["source_id"] = "OSV-source-b"
+    duplicate["vulnerability"]["aliases"] = ["ghsa-shared-alias"]
+    report["remediation_tasks"].append(duplicate)
+
+
 class ReportValidatorTest(unittest.TestCase):
     def test_passes_clean_public_report(self):
         result = validate_report(clean_report())
@@ -105,6 +117,23 @@ class ReportValidatorTest(unittest.TestCase):
         duplicate["vulnerability"]["canonical_id"] = "CVE-2025-22222"
         duplicate["vulnerability"]["source_id"] = "OSV-source-b"
         duplicate["vulnerability"]["aliases"] = ["ghsa-shared-alias"]
+        report["remediation_tasks"].append(duplicate)
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("duplicate_task", finding_codes(result))
+
+    def test_detects_duplicate_task_identity_with_canonical_alias_overlap(self):
+        report = clean_report()
+        first = report["remediation_tasks"][0]
+        first["vulnerability"]["canonical_id"] = "CVE-2025-11111"
+        first["vulnerability"]["source_id"] = "GHSA-source-a"
+        first["vulnerability"]["aliases"] = []
+        duplicate = deepcopy(first)
+        duplicate["vulnerability"]["canonical_id"] = "GHSA-source-b"
+        duplicate["vulnerability"]["source_id"] = "OSV-source-b"
+        duplicate["vulnerability"]["aliases"] = ["cve-2025-11111"]
         report["remediation_tasks"].append(duplicate)
 
         result = validate_report(report)
@@ -229,6 +258,89 @@ class ReportValidatorTest(unittest.TestCase):
         codes = finding_codes(result)
         self.assertIn("unsafe_public_text", codes)
         self.assertIn("forbidden_public_key", codes)
+
+    def test_detects_nested_unsafe_and_unsupported_text_outside_summary(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["evidence"].append(
+            {
+                "type": "analysis_note",
+                "source": "src/upload/receiptParser.ts",
+                "claim": "Confirmed exploitable through receipt upload.",
+            }
+        )
+        task["patch_plan"]["steps"].append("Do not include exploit payload details in the PR.")
+
+        result = validate_report(report)
+
+        codes = finding_codes(result)
+        self.assertFalse(result["passed"])
+        self.assertIn("unsupported_claim_marker", codes)
+        self.assertIn("unsafe_public_text", codes)
+        self.assertIn(
+            "remediation_tasks[0].evidence[2].claim",
+            {finding["path"] for finding in result["findings"]},
+        )
+        self.assertIn(
+            "remediation_tasks[0].patch_plan.steps[1]",
+            {finding["path"] for finding in result["findings"]},
+        )
+
+    def test_detects_whitespace_only_evidence_as_missing(self):
+        report = clean_report()
+        report["remediation_tasks"][0]["evidence"] = [
+            {"type": "lockfile", "source": "  ", "claim": "\t"}
+        ]
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("missing_evidence", finding_codes(result))
+
+    def test_wave_1_adversarial_reports_fail_expected_quality_gates(self):
+        cases = [
+            (
+                "unsupported exploitability claim",
+                lambda report: report["remediation_tasks"][0]["risk"].update(
+                    {"rationale": ["This vulnerability is actively exploited in production."]}
+                ),
+                "unsupported_claim_marker",
+            ),
+            (
+                "missing evidence",
+                lambda report: report["remediation_tasks"][0].update({"evidence": []}),
+                "missing_evidence",
+            ),
+            (
+                "non-review task without patch target",
+                lambda report: report["remediation_tasks"][0]["patch_plan"].update(
+                    {"target_version": None}
+                ),
+                "missing_fix_or_target_version",
+            ),
+            (
+                "duplicate alias overlap",
+                add_alias_overlap_duplicate,
+                "duplicate_task",
+            ),
+            (
+                "unsafe text leakage",
+                lambda report: report["remediation_tasks"][0]["test_plan"].append(
+                    "Validate without proof-of-concept instructions."
+                ),
+                "unsafe_public_text",
+            ),
+        ]
+
+        for name, mutate, expected_code in cases:
+            with self.subTest(name=name):
+                report = clean_report()
+                mutate(report)
+
+                result = validate_report(report)
+
+                self.assertFalse(result["passed"])
+                self.assertIn(expected_code, finding_codes(result))
 
     def test_detects_type_only_evidence_as_missing(self):
         report = clean_report()
