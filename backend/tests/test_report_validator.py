@@ -1,0 +1,165 @@
+import io
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from copy import deepcopy
+from pathlib import Path
+
+from app.eval.report_validator import main, validate_report
+
+
+def clean_task():
+    return {
+        "task_id": "task_123",
+        "repo": "payments-api",
+        "package": {
+            "name": "archive-utils",
+            "ecosystem": "npm",
+            "current_version": "2.1.4",
+            "dependency_type": "dependencies",
+            "is_direct": True,
+        },
+        "vulnerability": {
+            "canonical_id": "CVE-2025-12345",
+            "source_id": "GHSA-runtime",
+            "aliases": ["GHSA-runtime"],
+            "severity": "HIGH",
+            "summary": "Archive parsing vulnerability",
+            "fixed_versions": ["2.2.0"],
+        },
+        "risk": {
+            "priority": "P0_RELEASE_BLOCKER",
+            "risk_score": 95,
+            "known_exploited": None,
+            "epss_score": None,
+            "runtime_scope": "production",
+            "reachability": "possibly_reachable",
+            "confidence": 0.8,
+            "factors": ["production runtime path"],
+            "rationale": ["Package is imported by the upload route."],
+        },
+        "evidence": [
+            {"type": "lockfile", "source": "package-lock.json"},
+            {"type": "source_file", "source": "src/upload/receiptParser.ts"},
+        ],
+        "patch_plan": {
+            "recommended_action": "upgrade",
+            "target_version": "2.2.0",
+            "steps": ["Update archive-utils from 2.1.4 to 2.2.0"],
+        },
+        "test_plan": ["npm test"],
+        "rollback_plan": ["Revert dependency bump PR"],
+        "owner": "@payments-platform",
+    }
+
+
+def clean_report():
+    return {
+        "scan_id": "scan_123",
+        "repo_profile": {"repo_name": "payments-api"},
+        "remediation_tasks": [clean_task()],
+        "summary": {"deduped_remediation_tasks": 1},
+        "errors": [],
+    }
+
+
+def finding_codes(result):
+    return {finding["code"] for finding in result["findings"]}
+
+
+class ReportValidatorTest(unittest.TestCase):
+    def test_passes_clean_public_report(self):
+        result = validate_report(clean_report())
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["finding_count"], 0)
+
+    def test_detects_duplicate_task_identity(self):
+        report = clean_report()
+        report["remediation_tasks"].append(deepcopy(report["remediation_tasks"][0]))
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("duplicate_task", finding_codes(result))
+
+    def test_detects_downgrade_patch_target(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["patch_plan"]["target_version"] = "2.0.9"
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("downgrade_patch_target", finding_codes(result))
+
+    def test_detects_non_review_priority_without_fix_or_target(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["vulnerability"]["fixed_versions"] = []
+        task["patch_plan"]["target_version"] = None
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("missing_fix_or_target_version", finding_codes(result))
+
+    def test_allows_human_review_without_fix_or_target(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["risk"]["priority"] = "NEEDS_HUMAN_REVIEW"
+        task["vulnerability"]["fixed_versions"] = []
+        task["patch_plan"]["target_version"] = None
+
+        result = validate_report(report)
+
+        self.assertTrue(result["passed"])
+
+    def test_detects_unsafe_public_text_and_forbidden_keys(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["vulnerability"]["summary"] = "PoC includes malicious payload notes."
+        task["vulnerability"]["details"] = "Internal advisory details."
+        task["raw"] = {"advisory": "internal"}
+
+        result = validate_report(report)
+
+        codes = finding_codes(result)
+        self.assertIn("unsafe_public_text", codes)
+        self.assertIn("forbidden_public_key", codes)
+
+    def test_detects_missing_evidence_missing_priority_and_unsupported_claim(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["evidence"] = []
+        task["risk"].pop("priority")
+        task["risk"]["rationale"] = ["This issue is confirmed exploitable in production."]
+
+        result = validate_report(report)
+
+        codes = finding_codes(result)
+        self.assertIn("missing_evidence", codes)
+        self.assertIn("missing_priority", codes)
+        self.assertIn("unsupported_claim_marker", codes)
+
+    def test_cli_prints_json_and_exits_nonzero_on_failure(self):
+        report = clean_report()
+        report["remediation_tasks"][0]["evidence"] = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "report.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = main([str(path)])
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(payload["passed"])
+        self.assertIn("missing_evidence", finding_codes(payload))
+
+
+if __name__ == "__main__":
+    unittest.main()
