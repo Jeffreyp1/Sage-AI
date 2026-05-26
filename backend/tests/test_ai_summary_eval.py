@@ -39,6 +39,15 @@ def unsupported_claim_case() -> dict[str, object]:
     return case
 
 
+def false_cited_fact_case() -> dict[str, object]:
+    case = valid_case()
+    case["case_id"] = "false-cited-fact-blocks"
+    case["provider_mode"] = "false_cited_fact"
+    case["expected_blocked"] = True
+    case["expected_unsupported_claim_ids"] = ["claim-false-fact-1"]
+    return case
+
+
 def mutating_priority_case() -> dict[str, object]:
     case = valid_case()
     case["case_id"] = "priority-risk-mutation-blocks"
@@ -115,7 +124,7 @@ def test_default_eval_cases_pass() -> None:
     results = [run_case(case) for case in cases]
     summary = summarize_results(results)
 
-    assert len(cases) >= 3
+    assert len(cases) >= 4
     assert summary["passed"] is True
     assert summary["case_count"] == len(cases)
     assert summary["passed_count"] == len(cases)
@@ -138,6 +147,14 @@ def test_run_case_requires_unsupported_claim_block() -> None:
     assert result["passed"] is True
     assert result["blocked"] is True
     assert result["unsupported_claim_ids"] == ["claim-unsupported-1"]
+
+
+def test_run_case_requires_false_cited_fact_block() -> None:
+    result = run_case(false_cited_fact_case())
+
+    assert result["passed"] is True
+    assert result["blocked"] is True
+    assert result["unsupported_claim_ids"] == ["claim-false-fact-1"]
 
 
 def test_run_case_requires_priority_and_risk_mutation_block() -> None:

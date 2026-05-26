@@ -3,12 +3,15 @@
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from hashlib import blake2b
+import re
 
 from app.ai.contracts import (
     AIFindingSummaryRequest,
     AIFindingSummaryResponse,
     AIProvider,
     AIResponseValidationResult,
+    Citation,
+    ClaimCheck,
     EvidenceItem,
     MockAIProvider,
     validate_finding_summary_response,
@@ -20,6 +23,58 @@ from app.services.trace_service import TraceService
 
 
 MAX_EVIDENCE_CONTENT_LENGTH = 1200
+CLAIM_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+CLAIM_SUPPORT_DISPOSITIONS = {"fact", "inference"}
+HIGH_RISK_OVERCLAIM_PHRASES = (
+    "confirmed exploited",
+    "actively exploited",
+    "known exploited",
+    "exploited in production",
+    "exfiltrating",
+    "exfiltrated",
+    "exfiltration",
+    "customer data theft",
+    "credential theft",
+    "data breach",
+    "compromised in production",
+)
+CLAIM_SUPPORT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "advisory",
+    "are",
+    "as",
+    "be",
+    "by",
+    "can",
+    "cited",
+    "claim",
+    "context",
+    "evidence",
+    "finding",
+    "focus",
+    "for",
+    "from",
+    "has",
+    "in",
+    "is",
+    "item",
+    "on",
+    "only",
+    "provided",
+    "reachability",
+    "remediation",
+    "review",
+    "should",
+    "supplied",
+    "supports",
+    "that",
+    "the",
+    "this",
+    "to",
+    "with",
+}
 
 
 @dataclass(frozen=True)
@@ -72,6 +127,7 @@ class AISummaryService:
                 )
             response = candidate
             validation = validate_finding_summary_response(request, response)
+            validation = validate_provider_claim_support(request, response, validation)
             if validation.blocked:
                 response = None
             else:
@@ -324,12 +380,138 @@ def has_unsafe_error(validation: AIResponseValidationResult) -> bool:
     return False
 
 
+def validate_provider_claim_support(
+    request: AIFindingSummaryRequest,
+    response: AIFindingSummaryResponse,
+    validation: AIResponseValidationResult,
+) -> AIResponseValidationResult:
+    if not isinstance(response.claim_checks, list | tuple):
+        return validation
+
+    evidence_by_id = {item.id: item for item in request.evidence}
+    errors = list(validation.errors)
+    unsupported_claim_ids = list(validation.unsupported_claim_ids)
+
+    for claim in response.claim_checks:
+        if not isinstance(claim, ClaimCheck):
+            continue
+        if claim.disposition not in CLAIM_SUPPORT_DISPOSITIONS:
+            continue
+        if not isinstance(claim.claim_id, str):
+            continue
+        if not isinstance(claim.claim, str):
+            continue
+
+        cited_evidence = cited_evidence_items(claim, evidence_by_id)
+        if len(cited_evidence) == 0:
+            continue
+        if provider_claim_is_supported(claim.claim, cited_evidence):
+            continue
+
+        unsupported_claim_ids.append(claim.claim_id)
+        errors.append("Claim %s is not supported by cited evidence." % claim.claim_id)
+
+    deduped_errors = dedupe_strings(errors)
+    deduped_unsupported_claim_ids = dedupe_strings(unsupported_claim_ids)
+    blocked = (
+        validation.blocked
+        or len(deduped_errors) > 0
+        or len(deduped_unsupported_claim_ids) > 0
+    )
+    return replace(
+        validation,
+        valid=not blocked,
+        blocked=blocked,
+        errors=deduped_errors,
+        unsupported_claim_ids=deduped_unsupported_claim_ids,
+    )
+
+
+def cited_evidence_items(
+    claim: ClaimCheck,
+    evidence_by_id: Mapping[str, EvidenceItem],
+) -> list[EvidenceItem]:
+    if not isinstance(claim.evidence_ids, list | tuple | set):
+        return []
+
+    items: list[EvidenceItem] = []
+    seen_ids: set[str] = set()
+    for evidence_id in claim.evidence_ids:
+        if not isinstance(evidence_id, str):
+            continue
+        if evidence_id in seen_ids:
+            continue
+        evidence = evidence_by_id.get(evidence_id)
+        if evidence is None:
+            continue
+        seen_ids.add(evidence_id)
+        items.append(evidence)
+    return items
+
+
+def provider_claim_is_supported(
+    claim_text: str,
+    cited_evidence: list[EvidenceItem],
+) -> bool:
+    evidence_text = "\n".join(evidence_support_text(item) for item in cited_evidence)
+    normalized_claim = normalized_support_text(claim_text)
+    normalized_evidence = normalized_support_text(evidence_text)
+
+    for phrase in HIGH_RISK_OVERCLAIM_PHRASES:
+        if phrase in normalized_claim and phrase not in normalized_evidence:
+            return False
+
+    claim_tokens = meaningful_tokens(claim_text)
+    if len(claim_tokens) == 0:
+        return True
+
+    evidence_tokens = meaningful_tokens(evidence_text)
+    return len(claim_tokens & evidence_tokens) > 0
+
+
+def evidence_support_text(item: EvidenceItem) -> str:
+    metadata_values = [
+        value
+        for value in item.metadata.values()
+        if isinstance(value, str) and value.strip() != ""
+    ]
+    parts = [item.kind, item.source, item.content]
+    parts.extend(metadata_values)
+    return " ".join(parts)
+
+
+def normalized_support_text(value: str) -> str:
+    return " ".join(CLAIM_TOKEN_PATTERN.findall(value.lower()))
+
+
+def meaningful_tokens(value: str) -> set[str]:
+    tokens: set[str] = set()
+    for token in CLAIM_TOKEN_PATTERN.findall(value.lower()):
+        if len(token) < 3:
+            continue
+        if token in CLAIM_SUPPORT_STOPWORDS:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def dedupe_strings(values: list[str]) -> list[str]:
+    seen_values: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen_values:
+            continue
+        seen_values.add(value)
+        deduped.append(value)
+    return deduped
+
+
 def safe_public_response(
     request: AIFindingSummaryRequest,
     response: AIFindingSummaryResponse,
 ) -> AIFindingSummaryResponse:
-    return replace(
-        response,
+    claim_id_map = safe_public_claim_id_map(response)
+    return AIFindingSummaryResponse(
         finding_id=request.finding_id,
         package_name=request.package_name,
         vulnerability_id=request.vulnerability_id,
@@ -337,7 +519,20 @@ def safe_public_response(
         risk_score=request.risk_score,
         summary=safe_public_summary(request),
         explanation=safe_public_explanation(response),
+        citations=safe_public_citations(response, claim_id_map),
+        claim_checks=safe_public_claim_checks(response, claim_id_map),
+        provider_name=response.provider_name,
+        errors=[],
     )
+
+
+def safe_public_claim_id_map(response: AIFindingSummaryResponse) -> dict[str, str]:
+    claim_id_map: dict[str, str] = {}
+    for claim in response.claim_checks:
+        if claim.claim_id in claim_id_map:
+            continue
+        claim_id_map[claim.claim_id] = "public-claim-%s" % (len(claim_id_map) + 1)
+    return claim_id_map
 
 
 def safe_public_summary(request: AIFindingSummaryRequest) -> str:
@@ -368,6 +563,51 @@ def safe_public_explanation(response: AIFindingSummaryResponse) -> str:
         "The public explanation is based on %s from supplied evidence "
         "and preserves triage values."
     ) % claim_count_text
+
+
+def safe_public_citations(
+    response: AIFindingSummaryResponse,
+    claim_id_map: Mapping[str, str],
+) -> list[Citation]:
+    citations: list[Citation] = []
+    for citation in response.citations:
+        citations.append(
+            Citation(
+                evidence_id=citation.evidence_id,
+                claim_id=claim_id_map.get(citation.claim_id, "public-claim-unknown"),
+            )
+        )
+    return citations
+
+
+def safe_public_claim_checks(
+    response: AIFindingSummaryResponse,
+    claim_id_map: Mapping[str, str],
+) -> list[ClaimCheck]:
+    claim_checks: list[ClaimCheck] = []
+    for claim in response.claim_checks:
+        claim_checks.append(
+            ClaimCheck(
+                claim_id=claim_id_map.get(claim.claim_id, "public-claim-unknown"),
+                claim=safe_public_claim_text(claim),
+                disposition=claim.disposition,
+                evidence_ids=list(claim.evidence_ids),
+                rationale="Validated against supplied evidence.",
+            )
+        )
+    return claim_checks
+
+
+def safe_public_claim_text(claim: ClaimCheck) -> str:
+    evidence_count = len(claim.evidence_ids)
+    evidence_label = "evidence item"
+    if evidence_count != 1:
+        evidence_label = "evidence items"
+    return "%s claim validated with %s cited %s." % (
+        claim.disposition,
+        evidence_count,
+        evidence_label,
+    )
 
 
 def chunk_metadata_has_value(

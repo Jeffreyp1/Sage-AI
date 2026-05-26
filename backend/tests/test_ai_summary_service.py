@@ -186,6 +186,38 @@ class UnsupportedPublicProseProvider:
         )
 
 
+class FalseCitedFactProvider:
+    name = "false-cited-fact-provider"
+
+    def summarize_finding(
+        self,
+        request: AIFindingSummaryRequest,
+    ) -> AIFindingSummaryResponse:
+        evidence_id = request.evidence[0].id
+        claim_id = "claim-false-fact-1"
+        false_claim = "archive-utils is confirmed exploited in production"
+        return AIFindingSummaryResponse(
+            finding_id=request.finding_id,
+            package_name=request.package_name,
+            vulnerability_id=request.vulnerability_id,
+            priority=request.priority,
+            risk_score=request.risk_score,
+            summary="safe-looking summary",
+            explanation="safe-looking explanation",
+            citations=[Citation(evidence_id=evidence_id, claim_id=claim_id)],
+            claim_checks=[
+                ClaimCheck(
+                    claim_id=claim_id,
+                    claim=false_claim,
+                    disposition="fact",
+                    evidence_ids=[evidence_id],
+                    rationale="The claim cites a real evidence item.",
+                )
+            ],
+            provider_name=self.name,
+        )
+
+
 class MalformedProvider:
     name = "malformed-provider"
 
@@ -226,6 +258,39 @@ class RawValidationLeakProvider:
                 )
             ],
             provider_name=self.name,
+        )
+
+
+class AcceptedPublicLeakProvider:
+    name = "accepted-public-leak-provider"
+    raw_error = "provider-authored errors text must stay private"
+    provider_claim_id = "confirmed exploited in production"
+
+    def summarize_finding(
+        self,
+        request: AIFindingSummaryRequest,
+    ) -> AIFindingSummaryResponse:
+        evidence_id = request.evidence[0].id
+        return AIFindingSummaryResponse(
+            finding_id=request.finding_id,
+            package_name=request.package_name,
+            vulnerability_id=request.vulnerability_id,
+            priority=request.priority,
+            risk_score=request.risk_score,
+            summary="safe-looking summary",
+            explanation="safe-looking explanation",
+            citations=[Citation(evidence_id=evidence_id, claim_id=self.provider_claim_id)],
+            claim_checks=[
+                ClaimCheck(
+                    claim_id=self.provider_claim_id,
+                    claim="archive-utils has cited package evidence.",
+                    disposition="fact",
+                    evidence_ids=[evidence_id],
+                    rationale="The claim cites a real evidence item.",
+                )
+            ],
+            provider_name=self.name,
+            errors=[self.raw_error],
         )
 
 
@@ -342,6 +407,22 @@ def test_unsupported_public_summary_and_explanation_are_not_exposed() -> None:
     assert "exfiltrating customer data" not in public_text
 
 
+def test_cited_false_fact_is_blocked_and_not_exposed_publicly() -> None:
+    false_claim = "archive-utils is confirmed exploited in production"
+
+    result = AISummaryService(provider=FalseCitedFactProvider()).summarize_remediation_task(
+        remediation_task(),
+        evidence_chunks(),
+    )
+
+    public_result = result.to_dict()
+
+    assert result.blocked
+    assert result.response is None
+    assert result.validation.unsupported_claim_ids == ["claim-false-fact-1"]
+    assert false_claim not in json_text(public_result)
+
+
 def test_blocked_provider_response_is_not_exposed_publicly() -> None:
     provider = MockAIProvider(
         unsupported_claims=["This blocked claim must not be exposed as accepted output."]
@@ -445,6 +526,62 @@ def test_blocked_public_validation_omits_raw_citation_and_claim_ids() -> None:
     assert public_result["validation"]["unsupported_claim_ids"] == []
     assert "token=secret-invalid-citation" not in public_text
     assert "claim-unsupported-secret" not in public_text
+
+
+def test_accepted_public_output_remaps_provider_claim_ids() -> None:
+    result = AISummaryService(
+        provider=AcceptedPublicLeakProvider()
+    ).summarize_remediation_task(
+        remediation_task(),
+        evidence_chunks(),
+    )
+
+    public_result = result.to_dict()
+    public_text = json_text(public_result)
+    public_response = public_result["response"]
+    public_claim_id = public_response["claim_checks"][0]["claim_id"]
+
+    assert not result.blocked
+    assert public_response is not None
+    assert AcceptedPublicLeakProvider.provider_claim_id not in public_text
+    assert public_claim_id.startswith("public-claim-")
+    assert public_response["citations"][0]["claim_id"] == public_claim_id
+
+
+def test_accepted_public_output_omits_provider_authored_errors() -> None:
+    result = AISummaryService(
+        provider=AcceptedPublicLeakProvider()
+    ).summarize_remediation_task(
+        remediation_task(),
+        evidence_chunks(),
+    )
+
+    public_result = result.to_dict()
+    public_text = json_text(public_result)
+    public_response = public_result["response"]
+
+    assert not result.blocked
+    assert public_response is not None
+    assert public_response["errors"] == []
+    assert AcceptedPublicLeakProvider.raw_error not in public_text
+
+
+def test_valid_summary_keeps_sanitized_public_claim_ids_aligned() -> None:
+    result = AISummaryService(provider=MockAIProvider()).summarize_remediation_task(
+        remediation_task(),
+        evidence_chunks(),
+    )
+
+    public_result = result.to_dict()
+    public_response = public_result["response"]
+    claim_ids = [claim["claim_id"] for claim in public_response["claim_checks"]]
+    cited_claim_ids = [citation["claim_id"] for citation in public_response["citations"]]
+
+    assert not result.blocked
+    assert result.validation.valid
+    assert all(claim_id.startswith("public-claim-") for claim_id in claim_ids)
+    assert "claim-fact-1" not in json_text(public_result)
+    assert set(cited_claim_ids).issubset(set(claim_ids))
 
 
 def test_traces_record_validation_status() -> None:
