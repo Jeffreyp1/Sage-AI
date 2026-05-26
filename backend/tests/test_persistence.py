@@ -15,7 +15,11 @@ from app.models import (
     VulnerabilityAlias,
 )
 from app.services.dependency_parser import ParsedDependency
-from app.services.persistence import PersistenceError, persist_scan_result
+from app.services.persistence import (
+    PersistenceError,
+    RepoPersistenceIdentity,
+    persist_scan_result,
+)
 from app.services.repo_ingestion import RepoProfile
 from app.services.scan_service import RemediationTaskOutput, ScanResult
 from app.services.vulnerability_normalizer import NormalizedVulnerability
@@ -157,6 +161,72 @@ def test_persist_scan_result_prevents_duplicate_natural_records():
     assert db.query(PackageVulnerability).count() == 1
     assert db.query(ReachabilityAssessment).count() == 1
     assert db.query(RemediationTask).count() == 1
+
+
+def test_persist_scan_result_keeps_local_and_github_repo_identities_separate():
+    db = make_session()
+    local_result = deterministic_scan_result()
+    local_result.repo_profile.repo_name = "foo"
+    local_result.repo_profile.root_path = "/repos/foo"
+    github_result = deterministic_scan_result()
+    github_result.repo_profile.repo_name = "foo"
+    github_result.repo_profile.root_path = "/tmp/vulnsage-github/local-foo"
+
+    local_scan = persist_scan_result(db, local_result)
+    github_scan = persist_scan_result(
+        db,
+        github_result,
+        repo_identity=RepoPersistenceIdentity(
+            provider="github",
+            name="foo",
+            full_name="local/foo",
+            remote_url="https://github.com/local/foo.git",
+            organization_name="local",
+        ),
+    )
+
+    assert local_scan.repo_id != github_scan.repo_id
+    repos = db.query(Repo).order_by(Repo.provider.asc()).all()
+    assert [(repo.provider, repo.name, repo.full_name) for repo in repos] == [
+        ("github", "foo", "local/foo"),
+        ("local", "foo", "local/foo"),
+    ]
+
+
+def test_persist_scan_result_keeps_github_casing_variants_separate():
+    db = make_session()
+    lower_result = deterministic_scan_result()
+    mixed_result = deterministic_scan_result()
+
+    lower_scan = persist_scan_result(
+        db,
+        lower_result,
+        repo_identity=RepoPersistenceIdentity(
+            provider="github",
+            name="foo",
+            full_name="local/foo",
+            remote_url="https://github.com/local/foo.git",
+            organization_name="local",
+        ),
+    )
+    mixed_scan = persist_scan_result(
+        db,
+        mixed_result,
+        repo_identity=RepoPersistenceIdentity(
+            provider="github",
+            name="Foo",
+            full_name="Local/Foo",
+            remote_url="https://github.com/Local/Foo.git",
+            organization_name="Local",
+        ),
+    )
+
+    assert lower_scan.repo_id != mixed_scan.repo_id
+    repos = db.query(Repo).order_by(Repo.full_name.asc()).all()
+    assert [(repo.provider, repo.name, repo.full_name) for repo in repos] == [
+        ("github", "Foo", "Local/Foo"),
+        ("github", "foo", "local/foo"),
+    ]
 
 
 def make_session():

@@ -1,8 +1,9 @@
 """Persistence adapter for scan results."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Optional, TypeVar
 
 from sqlalchemy.exc import IntegrityError
@@ -65,11 +66,12 @@ def _persist_scan_result(
     identity = repo_identity or local_repo_identity(result)
     organization = get_or_create_organization(db, identity.organization_name)
     repo = get_or_create_repo(db, organization, result, identity)
+    repo_root = remote_safe_repo_root(result, identity)
     scan = Scan(
         repo_id=repo.id,
         status="completed",
-        started_at=datetime.utcnow(),
-        completed_at=datetime.utcnow(),
+        started_at=utc_now(),
+        completed_at=utc_now(),
         summary_json=result.summary,
     )
     db.add(scan)
@@ -77,13 +79,14 @@ def _persist_scan_result(
 
     package_models = {}
     for package in result.packages:
-        model = get_or_create_package(db, repo, package)
+        storage_package = remote_safe_package(package, repo_root)
+        model = get_or_create_package(db, repo, storage_package)
         package_models[
             package_key(
-                package.name,
-                package.ecosystem,
-                package.current_version,
-                package.parent_package,
+                storage_package.name,
+                storage_package.ecosystem,
+                storage_package.current_version,
+                storage_package.parent_package,
             )
         ] = model
 
@@ -93,29 +96,30 @@ def _persist_scan_result(
     }
 
     for task in result.remediation_tasks:
-        package_model = package_models.get(task_package_key(task))
+        storage_task = remote_safe_task(task, repo_root, identity.full_name)
+        package_model = package_models.get(task_package_key(storage_task))
         vulnerability_model = vulnerability_models.get(
-            str(task.vulnerability.get("canonical_id"))
+            str(storage_task.vulnerability.get("canonical_id"))
         )
         if package_model is None or vulnerability_model is None:
-            raise task_link_error(task, package_model, vulnerability_model)
+            raise task_link_error(storage_task, package_model, vulnerability_model)
         package_vulnerability = get_or_create_package_vulnerability(
             db,
             package_model,
             vulnerability_model,
-            task,
+            storage_task,
         )
         upsert_reachability_assessment(
             db,
             package_vulnerability,
-            task,
+            storage_task,
         )
 
         remediation_task = get_or_create_current_remediation_task(
             db,
             repo,
             package_vulnerability,
-            task,
+            storage_task,
         )
         task.task_id = remediation_task.id
 
@@ -160,7 +164,10 @@ def get_or_create_repo(
     def query_repo() -> Repo | None:
         return (
             db.query(Repo)
-            .filter(Repo.full_name == identity.full_name)
+            .filter(
+                Repo.provider == identity.provider,
+                Repo.full_name == identity.full_name,
+            )
             .order_by(Repo.id)
             .first()
         )
@@ -189,6 +196,94 @@ def get_or_create_repo(
     repo.language = ", ".join(result.repo_profile.languages)
     repo.service_type = result.repo_profile.service_type
     return repo
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def remote_safe_repo_root(
+    result: ScanResult,
+    identity: RepoPersistenceIdentity,
+) -> Path | None:
+    if identity.provider != "github":
+        return None
+    if not result.repo_profile.root_path:
+        return None
+    return Path(result.repo_profile.root_path).resolve()
+
+
+def remote_safe_package(
+    package: ParsedDependency,
+    repo_root: Path | None,
+) -> ParsedDependency:
+    if repo_root is None:
+        return package
+    return replace(
+        package,
+        manifest_path=remote_safe_optional_text(package.manifest_path, repo_root),
+        lockfile_path=remote_safe_optional_text(package.lockfile_path, repo_root),
+        evidence=remote_safe_value(package.evidence, repo_root),
+    )
+
+
+def remote_safe_task(
+    task: RemediationTaskOutput,
+    repo_root: Path | None,
+    repo_full_name: str,
+) -> RemediationTaskOutput:
+    if repo_root is None:
+        return task
+    return replace(
+        task,
+        repo=repo_full_name,
+        package=remote_safe_value(task.package, repo_root),
+        evidence=remote_safe_value(task.evidence, repo_root),
+        patch_plan=remote_safe_value(task.patch_plan, repo_root),
+        test_plan=remote_safe_value(task.test_plan, repo_root),
+        rollback_plan=remote_safe_value(task.rollback_plan, repo_root),
+    )
+
+
+def remote_safe_optional_text(value: Optional[str], repo_root: Path) -> Optional[str]:
+    if value is None:
+        return None
+    return remote_safe_text(value, repo_root)
+
+
+def remote_safe_value(value, repo_root: Path | str):
+    root = Path(repo_root).resolve()
+    return _remote_safe_value(value, root)
+
+
+def _remote_safe_value(value, repo_root: Path):
+    if isinstance(value, dict):
+        return {
+            key: _remote_safe_value(item, repo_root)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_remote_safe_value(item, repo_root) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_remote_safe_value(item, repo_root) for item in value)
+    if isinstance(value, str):
+        return remote_safe_text(value, repo_root)
+    return value
+
+
+def remote_safe_text(value: str, repo_root: Path) -> str:
+    try:
+        path = Path(value)
+        if path.is_absolute():
+            return path.resolve().relative_to(repo_root).as_posix()
+    except ValueError:
+        pass
+    root_text = str(repo_root)
+    if value == root_text:
+        return "."
+    if root_text in value:
+        return value.replace(root_text + "/", "").replace(root_text, ".")
+    return value
 
 
 def get_or_create_package(

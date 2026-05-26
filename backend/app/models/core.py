@@ -1,6 +1,6 @@
 """SQLAlchemy models for the backend MVP."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -27,8 +27,13 @@ def uuid_pk() -> str:
 
 
 class TimestampMixin:
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
 
 
 class User(Base, TimestampMixin):
@@ -50,7 +55,9 @@ class Organization(Base, TimestampMixin):
 
 class Repo(Base, TimestampMixin):
     __tablename__ = "repos"
-    __table_args__ = (UniqueConstraint("full_name", name="uq_repos_full_name"),)
+    __table_args__ = (
+        UniqueConstraint("provider", "full_name", name="uq_repos_provider_full_name"),
+    )
 
     id = Column(String(36), primary_key=True, default=uuid_pk)
     org_id = Column(String(36), ForeignKey("organizations.id"), nullable=True)
@@ -74,8 +81,8 @@ class Scan(Base, TimestampMixin):
     id = Column(String(36), primary_key=True, default=uuid_pk)
     repo_id = Column(String(36), ForeignKey("repos.id"), nullable=False)
     status = Column(String(50), nullable=False)
-    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    completed_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
     commit_sha = Column(String(64), nullable=True)
     summary_json = Column(JSON, nullable=False, default=dict)
 

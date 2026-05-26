@@ -16,7 +16,11 @@ from app.services.github_ingestion import (
     clone_github_repo,
     parse_github_repo_url,
 )
-from app.services.persistence import RepoPersistenceIdentity, persist_scan_result
+from app.services.persistence import (
+    RepoPersistenceIdentity,
+    persist_scan_result,
+    remote_safe_value,
+)
 from app.services.scan_service import ScanService
 
 router = APIRouter(prefix="/repos", tags=["repos"])
@@ -80,9 +84,13 @@ def scan_github(request: ScanGitHubRequest, db: Session = Depends(get_db)) -> Sc
     return ScanLocalResponse(
         scan_id=result.scan_id,
         persisted_scan_id=persisted_scan_id,
-        repo_profile=github_repo_profile(data["repo_profile"], repository),
+        repo_profile=github_repo_profile(data["repo_profile"], repository, str(repo_path)),
         summary=data["summary"],
-        remediation_tasks=data["remediation_tasks"],
+        remediation_tasks=github_remediation_tasks(
+            data["remediation_tasks"],
+            repository,
+            str(repo_path),
+        ),
         errors=data["errors"],
     )
 
@@ -100,14 +108,28 @@ def github_repo_identity(repository: GitHubRepository) -> RepoPersistenceIdentit
 def github_repo_profile(
     repo_profile: dict,
     repository: GitHubRepository,
+    repo_path: str,
 ) -> dict:
-    github_profile = dict(repo_profile)
+    github_profile = remote_safe_value(dict(repo_profile), repo_path)
     github_profile["provider"] = "github"
     github_profile["repo_name"] = repository.repo
     github_profile["full_name"] = repository.full_name
     github_profile["remote_url"] = repository.clone_url
     github_profile["root_path"] = repository.clone_url
     return github_profile
+
+
+def github_remediation_tasks(
+    remediation_tasks: list[dict],
+    repository: GitHubRepository,
+    repo_path: str,
+) -> list[dict]:
+    normalized_tasks = []
+    for task in remediation_tasks:
+        normalized_task = remote_safe_value(task, repo_path)
+        normalized_task["repo"] = repository.full_name
+        normalized_tasks.append(normalized_task)
+    return normalized_tasks
 
 
 @router.get("")
