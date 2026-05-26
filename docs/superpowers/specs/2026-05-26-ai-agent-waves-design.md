@@ -572,4 +572,3 @@ Reason:
 - It gives future agents a stable quality gate.
 - It makes every later wave easier to verify.
 - It creates the fastest visible improvement without adding fragile AI behavior too early.
-

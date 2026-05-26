@@ -1,10 +1,18 @@
+import io
 import json
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from app.eval.generate_demo_report import DEFAULT_REPO_PATH, PROJECT_ROOT, generate_report, main
+from app.eval.generate_demo_report import (
+    DEFAULT_REPO_PATH,
+    PROJECT_ROOT,
+    generate_report,
+    load_fixture_responses,
+    main,
+)
 from app.eval.report_validator import validate_report
 
 
@@ -69,6 +77,85 @@ class DemoReportTest(unittest.TestCase):
                 str(temp_root.resolve()),
             ):
                 self.assertNotIn(forbidden, temp_json)
+
+    def test_load_fixture_responses_rejects_non_list_package_entry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture_path = Path(temp_dir) / "fixtures.json"
+            fixture_path.write_text(
+                json.dumps({"archive-utils": {"id": "GHSA-demo"}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "fixture package entry for archive-utils must be a list",
+            ):
+                load_fixture_responses(fixture_path)
+
+    def test_load_fixture_responses_rejects_non_object_vulnerability_entry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture_path = Path(temp_dir) / "fixtures.json"
+            fixture_path.write_text(
+                json.dumps({"archive-utils": ["GHSA-demo"]}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "fixture vulnerability entry for archive-utils at index 0 must be a JSON object",
+            ):
+                load_fixture_responses(fixture_path)
+
+    def test_main_returns_error_for_missing_fixture_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_path = root / "report.json"
+            missing_fixture_path = root / "missing.json"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "--output",
+                        str(output_path),
+                        "--fixtures",
+                        str(missing_fixture_path),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertFalse(output_path.exists())
+            self.assertIn("Error: fixture file not found:", stderr.getvalue())
+            self.assertIn(str(missing_fixture_path), stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_main_returns_error_for_invalid_fixture_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_path = root / "report.json"
+            fixture_path = root / "fixtures.json"
+            fixture_path.write_text("{", encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "--output",
+                        str(output_path),
+                        "--fixtures",
+                        str(fixture_path),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertFalse(output_path.exists())
+            self.assertIn("Error: invalid fixture JSON:", stderr.getvalue())
+            self.assertIn(str(fixture_path), stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
 
 
 if __name__ == "__main__":
