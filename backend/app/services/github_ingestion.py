@@ -117,12 +117,15 @@ def clone_github_repo(url: str, base_directory: str | Path, timeout_seconds: int
             timeout=timeout_seconds,
         )
     except subprocess.CalledProcessError as exc:
-        detail = _clone_error_detail(exc)
         logger.warning(
             "github_clone_failure",
-            extra={**log_extra, "returncode": exc.returncode},
+            extra={
+                **log_extra,
+                "returncode": exc.returncode,
+                "stderr_length": len(exc.stderr or ""),
+            },
         )
-        raise GitHubCloneError("Unable to clone GitHub repository: %s" % detail) from exc
+        raise GitHubCloneError("Unable to clone GitHub repository.") from exc
     except subprocess.TimeoutExpired as exc:
         logger.warning(
             "github_clone_failure",
@@ -140,13 +143,3 @@ def clone_github_repo(url: str, base_directory: str | Path, timeout_seconds: int
 
     logger.info("github_clone_success", extra=log_extra)
     return destination
-
-
-def _clone_error_detail(exc: subprocess.CalledProcessError) -> str:
-    stderr = exc.stderr.strip() if exc.stderr is not None else ""
-    stdout = exc.stdout.strip() if exc.stdout is not None else ""
-    if stderr != "":
-        return stderr
-    if stdout != "":
-        return stdout
-    return "git clone exited with status %s." % exc.returncode

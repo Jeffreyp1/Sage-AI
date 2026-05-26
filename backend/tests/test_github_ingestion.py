@@ -59,6 +59,30 @@ class GitHubIngestionTest(unittest.TestCase):
                 with self.assertRaises(InvalidGitHubUrlError):
                     parse_github_repo_url(url)
 
+    def test_parse_preserves_invalid_url_error_messages(self):
+        cases = [
+            (
+                " http://github.com/acme/widget",
+                "GitHub URL must not contain leading or trailing whitespace.",
+            ),
+            ("http://github.com/acme/widget", "GitHub URL must use https."),
+            ("https://gitlab.com/acme/widget", "GitHub URL host must be github.com."),
+            (
+                "https://github.com/acme/widget?tab=readme",
+                "GitHub URL must not include params, query, or fragment.",
+            ),
+            ("https://github.com/acme", "GitHub URL must be https://github.com/<owner>/<repo>."),
+            ("https://github.com/-acme/widget", "GitHub owner name is malformed."),
+            ("https://github.com/acme/bad repo", "GitHub repository name is malformed."),
+        ]
+
+        for url, message in cases:
+            with self.subTest(url=url):
+                with self.assertRaises(InvalidGitHubUrlError) as caught:
+                    parse_github_repo_url(url)
+
+                self.assertEqual(str(caught.exception), message)
+
     def test_clone_builds_safe_argument_list_without_shell(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch("app.services.github_ingestion.subprocess.run") as run:
@@ -110,7 +134,41 @@ class GitHubIngestionTest(unittest.TestCase):
                 with self.assertRaises(GitHubCloneError) as caught:
                     clone_github_repo("https://github.com/acme/missing", temp_dir)
 
-        self.assertIn("repository not found", str(caught.exception))
+        self.assertEqual(str(caught.exception), "Unable to clone GitHub repository.")
+
+    def test_clone_failure_does_not_expose_stderr_temp_path_or_clone_url(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            destination = Path(temp_dir).resolve() / "leaked-destination"
+            stderr = (
+                "fatal: could not create work tree dir '%s': Permission denied\n"
+                "remote: https://token@example.test/path.git"
+            ) % destination
+            error = subprocess.CalledProcessError(
+                returncode=128,
+                cmd=["git", "clone"],
+                stderr=stderr,
+            )
+            with (
+                patch("app.services.github_ingestion.subprocess.run", side_effect=error),
+                patch("app.services.github_ingestion.logger") as logger,
+            ):
+                with self.assertRaises(GitHubCloneError) as caught:
+                    clone_github_repo("https://github.com/acme/missing", temp_dir)
+
+            log_call = logger.warning.call_args
+
+        self.assertEqual(str(caught.exception), "Unable to clone GitHub repository.")
+        public_error = str(caught.exception)
+        self.assertNotIn(str(destination), public_error)
+        self.assertNotIn(str(destination.parent), public_error)
+        self.assertNotIn("Permission denied", public_error)
+        self.assertNotIn("https://token@example.test/path.git", public_error)
+        self.assertEqual(log_call.args[0], "github_clone_failure")
+        self.assertEqual(log_call.kwargs["extra"]["returncode"], 128)
+        self.assertNotIn(str(destination), str(log_call))
+        self.assertNotIn(str(destination.parent), str(log_call))
+        self.assertNotIn("Permission denied", str(log_call))
+        self.assertNotIn("https://token@example.test/path.git", str(log_call))
 
     def test_clone_failure_logs_failure_with_sanitized_identity(self):
         error = subprocess.CalledProcessError(
