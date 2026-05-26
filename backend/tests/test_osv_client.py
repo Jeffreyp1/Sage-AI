@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from app.services.osv_client import OsvClient
+from app.services.osv_client import OsvClient, OsvClientError
 
 
 class FakeResponse:
@@ -44,7 +44,15 @@ class OsvClientTest(unittest.TestCase):
         client = OsvClient(opener=lambda _request, _timeout: self.fail("should not call opener"))
         self.assertEqual(client.query("lodash", None, "npm"), [])
 
+    def test_malformed_vulnerability_list_fails_closed(self):
+        client = OsvClient(
+            api_url="https://example.test/query",
+            opener=lambda _request, timeout: FakeResponse({"vulns": {"id": "bad"}}),
+        )
+
+        with self.assertRaises(OsvClientError):
+            client.query("lodash", "4.17.20", "npm")
+
 
 if __name__ == "__main__":
     unittest.main()
-

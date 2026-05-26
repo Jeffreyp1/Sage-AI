@@ -86,7 +86,7 @@ class NodeDependencyParser:
                 continue
             dep = ParsedDependency(
                 name=direct.name,
-                current_version=direct.version_spec,
+                current_version=None,
                 ecosystem=self.ecosystem,
                 dependency_type=direct.dependency_type,
                 is_direct=True,
@@ -348,4 +348,3 @@ def unique_dependencies(dependencies: Iterable[ParsedDependency]) -> List[Parsed
         if existing is None or (dep.is_direct and not existing.is_direct):
             by_key[key] = dep
     return list(by_key.values())
-

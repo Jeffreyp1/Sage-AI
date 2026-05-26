@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from app.services.scan_service import ScanService
+from app.services.osv_client import OsvClientError
 
 
 class FakeOsvClient:
@@ -81,6 +82,57 @@ class UnsafeDetailsOsvClient:
         ]
 
 
+class FailingOsvClient:
+    def query(self, package_name, version, ecosystem):
+        raise OsvClientError("provider unavailable")
+
+
+class MismatchedOsvClient:
+    def query(self, package_name, version, ecosystem):
+        return [
+            {
+                "id": "GHSA-wrong-package",
+                "aliases": ["CVE-2025-42424"],
+                "summary": "Wrong package vulnerability",
+                "database_specific": {"severity": "HIGH"},
+                "affected": [
+                    {
+                        "package": {"name": "other-package", "ecosystem": "npm"},
+                        "ranges": [
+                            {
+                                "type": "SEMVER",
+                                "events": [{"introduced": "0"}, {"fixed": "9.9.9"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+
+class UnsafeSummaryOsvClient:
+    def query(self, package_name, version, ecosystem):
+        return [
+            {
+                "id": "GHSA-unsafe-summary",
+                "aliases": ["CVE-2025-51515"],
+                "summary": "PoC advisory mentions malicious payload handling",
+                "database_specific": {"severity": "HIGH"},
+                "affected": [
+                    {
+                        "package": {"name": package_name, "ecosystem": ecosystem},
+                        "ranges": [
+                            {
+                                "type": "SEMVER",
+                                "events": [{"introduced": "0"}, {"fixed": "2.2.0"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+
 class ScanServiceTest(unittest.TestCase):
     def test_scan_builds_prioritized_remediation_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,6 +183,7 @@ class ScanServiceTest(unittest.TestCase):
         top_task = result.remediation_tasks[0]
         self.assertEqual(top_task.package["name"], "archive-utils")
         self.assertEqual(top_task.risk["priority"], "P0_RELEASE_BLOCKER")
+        self.assertIsNone(top_task.risk["known_exploited"])
         self.assertEqual(top_task.owner, "@payments-platform")
         self.assertTrue(
             any(evidence["type"] == "route" for evidence in top_task.evidence),
@@ -185,6 +238,90 @@ class ScanServiceTest(unittest.TestCase):
         self.assertNotIn("PoC", serialized)
         self.assertNotIn("malicious payload", serialized)
         self.assertTrue(vulnerability["details_redacted"])
+
+    def test_osv_failure_marks_scan_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"archive-utils": "2.1.4"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/archive-utils": {"version": "2.1.4"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=FailingOsvClient()).scan_local(str(root)).to_dict()
+
+        self.assertEqual(result["summary"]["scan_status"], "incomplete")
+        self.assertFalse(result["summary"]["complete"])
+        self.assertEqual(result["summary"]["deduped_remediation_tasks"], 0)
+        self.assertEqual(result["summary"]["error_count"], 1)
+
+    def test_mismatched_osv_package_does_not_create_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"archive-utils": "2.1.4"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/archive-utils": {"version": "2.1.4"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=MismatchedOsvClient()).scan_local(str(root)).to_dict()
+
+        self.assertEqual(result["summary"]["deduped_remediation_tasks"], 0)
+        self.assertEqual(result["summary"]["scan_status"], "incomplete")
+
+    def test_public_output_sanitizes_unsafe_summary_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"archive-utils": "2.1.4"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/archive-utils": {"version": "2.1.4"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "src" / "index.ts").write_text(
+                'import archiveUtils from "archive-utils";\n',
+                encoding="utf-8",
+            )
+
+            output = ScanService(osv_client=UnsafeSummaryOsvClient()).scan_local(str(root)).to_dict()
+
+        serialized = json.dumps(output)
+        self.assertNotIn("PoC", serialized)
+        self.assertNotIn("malicious payload", serialized)
+        self.assertIn("[redacted]", serialized)
 
 
 if __name__ == "__main__":

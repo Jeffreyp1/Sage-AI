@@ -61,10 +61,10 @@ class NodeDependencyParserTest(unittest.TestCase):
 
         self.assertEqual(len(dependencies), 1)
         self.assertEqual(dependencies[0].name, "lodash")
-        self.assertEqual(dependencies[0].current_version, "^4.17.20")
+        self.assertIsNone(dependencies[0].current_version)
+        self.assertEqual(dependencies[0].version_spec, "^4.17.20")
         self.assertTrue(dependencies[0].is_direct)
 
 
 if __name__ == "__main__":
     unittest.main()
-

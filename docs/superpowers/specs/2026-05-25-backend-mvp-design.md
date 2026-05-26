@@ -1,8 +1,16 @@
-# Backend MVP Design
+# Coffee-First Backend MVP Design
 
 ## Goal
 
-Build Sage-AI into a backend-first dependency vulnerability triage MVP that can scan a repository, identify vulnerable dependencies, rank the issues by repo-specific risk, persist results, and produce a safe remediation report through CLI and API.
+Build Sage-AI into a backend-first dependency vulnerability triage MVP that can scan a repository, identify vulnerable dependencies, rank the issues by repo-specific risk, and produce a safe, evidence-backed remediation report.
+
+For this milestone, the product's "coffee" is not UI, PR automation, or a full agent system. The coffee is:
+
+- finding vulnerable dependencies in a real repo
+- explaining which findings matter most
+- proving the priority with repo evidence
+- avoiding unsafe or unsupported claims
+- measuring report quality with deterministic evals
 
 ## Current State
 
@@ -25,14 +33,14 @@ Known gaps:
 - Docker is not available in the current shell, so Postgres/pgvector has not been smoke-tested here.
 - Persistence adapter exists but has not been verified against a live DB.
 - Eval and trace packages exist only as placeholders.
-- CLI output is useful for JSON, but human-readable reporting is still thin.
+- CLI output is useful for JSON, but report quality is not yet scored.
 
 ## Architecture
 
 Sage-AI remains backend-first and UI-light for this milestone.
 
 ```text
-CLI / FastAPI
+CLI / FastAPI / future IDE extension
   -> ScanService
   -> Repo profile + dependency parser
   -> OSV lookup
@@ -40,11 +48,45 @@ CLI / FastAPI
   -> Reachability analyzer
   -> Risk scorer
   -> Patch-plan builder
-  -> Persistence adapter
-  -> JSON/report/API responses
+  -> Safe JSON report
+  -> Eval + verifier harness
+  -> Persistence adapter later in the MVP
 ```
 
 The scanner is the core engine. FastAPI, CLI, future VS Code extension, and future GitHub integration should all call the same service layer instead of duplicating scan logic.
+
+## Coffee vs Matcha
+
+Coffee for this MVP:
+
+- deterministic dependency parsing
+- OSV advisory matching
+- alias dedupe without over-merging
+- repo-specific reachability signals
+- risk scoring that can rank a high production issue above a critical dev-only issue
+- safe public output
+- eval/verifier harness with adversarial checks
+- CLI demo path
+
+Good coffee machine:
+
+- focused tests
+- fixture-based eval cases
+- verifier findings with severities
+- Karen-style final gate
+- clear docs for future agents
+
+Matcha for later:
+
+- frontend dashboard
+- GitHub App install flow
+- automated PR creation
+- Jira/Slack integrations
+- full LangGraph agent workflow
+- full RAG with pgvector
+- executive reporting
+
+These are useful, but they do not matter until the scanner can produce trustworthy findings.
 
 ## Public Interfaces
 
@@ -93,7 +135,7 @@ Postgres stores durable product state:
 - eval cases and eval runs
 - local LLM/tool traces
 
-pgvector is reserved for RAG-ready evidence search. It will store embeddings later for advisory text, repo files, changelogs, and prior remediation decisions. It is not required for the first scanner path, but the schema is included so the MVP can grow into RAG without a database rewrite.
+Postgres and pgvector stay in the architecture, but they are not the next quality bottleneck. pgvector is reserved for RAG-ready evidence search later. The immediate MVP can prove quality through deterministic reports and evals before persistence is fully smoke-tested.
 
 ## Safety Rules
 
@@ -121,14 +163,15 @@ The system must not:
 
 MVP is complete when:
 
-- Demo repo can be scanned from CLI and API.
-- Live OSV scan returns prioritized remediation tasks.
-- Results persist in Postgres.
-- Read endpoints return persisted repos, packages, scans, and remediation tasks.
+- Demo repo can be scanned from CLI.
+- Live OSV or deterministic fixture scan returns prioritized remediation tasks.
 - Public outputs are safe and structured.
 - At least one task includes repo evidence and owner inference.
 - At least one task includes a patch/test/rollback plan.
 - Eval runner reports metrics from at least 10 fixture cases.
+- Verifier flags false positives, false negatives, weak evidence, unsafe output, and priority mismatches.
+- Full unit suite passes.
+- API and DB persistence are working or clearly documented as the next milestone if local tooling blocks verification.
 - Local trace fallback records scan/tool/risk events.
 - README explains setup and demo flow.
 
@@ -146,13 +189,35 @@ Every meaningful implementation slice follows:
 8. Fix audit findings.
 9. Commit explicitly named files.
 
+## Developer / Verifier / Manager Loop
+
+Developer:
+
+- implements scanner, evals, fixes, docs
+- keeps scope narrow
+- does not add UI/RAG/PR automation early
+
+Verifier:
+
+- attacks report quality
+- looks for false positives and false negatives
+- checks missing evidence and unsupported claims
+- rejects unsafe security output
+- reports findings with severity and file references
+
+Manager:
+
+- used only at gates
+- decides which verifier findings block MVP
+- prevents scope creep
+
 ## Immediate Priority
 
-Next slice: FastAPI + Postgres persistence verification.
+Next slice: deterministic eval and verifier harness.
 
 Reason:
 
 - Core scanner already works.
-- MVP needs durable state to be more than a script.
-- Persistence unlocks dashboard, evals, traces, historical trends, and GitHub/IDE integrations.
-
+- The user wants the best possible findings before UI or automation.
+- Eval/verifier work directly improves trust in the output.
+- DB/API polish is valuable after the report quality bar exists.

@@ -1,459 +1,201 @@
-# Backend MVP Implementation Plan
+# Coffee-First Backend MVP Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Future agents: this plan intentionally narrows the MVP. Do not spend this week on frontend, GitHub App install flow, PR generation, full LangGraph, or full RAG unless the user explicitly changes the goal. The product's coffee is high-quality vulnerability findings.
 
-**Goal:** Complete a backend-first MVP that scans a repo, retrieves vulnerability data, ranks remediation tasks, persists results, and reports quality metrics.
+**Goal:** make Sage-AI excellent at one thing first: scan a repo and produce trustworthy dependency vulnerability priorities with evidence, safe wording, and measurable quality.
 
-**Architecture:** Keep `ScanService` as the single scanner engine. CLI and FastAPI call the service, persistence stores scan results, evals verify behavior, and traces record execution evidence.
-
-**Tech Stack:** Python 3.11+, FastAPI, SQLAlchemy, Alembic, Postgres, pgvector, unittest/pytest-compatible tests, OSV API.
+**Core engine:** `ScanService` remains the single scanner path. CLI, FastAPI, future VS Code extension, and future GitHub integrations should call this same service.
 
 ---
 
-## File Structure Map
-
-- `backend/app/services/scan_service.py`: scanner orchestration and safe public output.
-- `backend/app/services/persistence.py`: DB writes for scan results.
-- `backend/app/api/routes_repos.py`: scan/read endpoints.
-- `backend/app/cli.py`: local CLI scan and report output.
-- `backend/app/eval/run_eval.py`: fixture eval runner.
-- `backend/app/eval/metrics.py`: deterministic eval metrics.
-- `backend/app/services/trace_service.py`: local trace recording fallback.
-- `backend/tests/`: unit and integration-style tests using fakes unless explicitly marked live.
-- `docs/superpowers/specs/2026-05-25-backend-mvp-design.md`: stable product/architecture reference.
-
-## Task 1: Verify Runtime And DB Baseline
-
-**Files:**
-
-- Modify: `README.md`
-- Test: no tracked test file required
-
-- [ ] **Step 1: Install backend deps in Python 3.11+ environment**
-
-Run:
-
-```bash
-cd backend
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-Expected:
-
-```text
-Successfully installed ...
-```
-
-- [ ] **Step 2: Start Postgres/pgvector**
-
-Run:
-
-```bash
-cd ..
-docker compose up -d postgres
-docker compose ps
-```
-
-Expected:
-
-```text
-vulnsage-postgres ... healthy
-```
-
-- [ ] **Step 3: Run migration**
-
-Run:
-
-```bash
-cd backend
-source .venv/bin/activate
-alembic upgrade head
-```
-
-Expected:
-
-```text
-Running upgrade  -> 0001_initial_schema
-```
-
-- [ ] **Step 4: Run API smoke test**
-
-Run:
-
-```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8000
-curl http://127.0.0.1:8000/health
-```
-
-Expected:
-
-```json
-{"status":"ok","service":"vulnsage-ai-backend","version":"0.1.0"}
-```
-
-- [ ] **Step 5: Update README setup notes**
-
-Add exact commands that worked on this machine, including any Python or Docker version caveats.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add README.md
-git commit -m "Document backend runtime setup"
-```
-
-## Task 2: Persist Scan Results End-To-End
-
-**Files:**
-
-- Modify: `backend/app/services/persistence.py`
-- Modify: `backend/app/api/routes_repos.py`
-- Test: `backend/tests/test_persistence.py`
-
-- [ ] **Step 1: Write failing persistence test**
-
-Create `backend/tests/test_persistence.py` with a SQLite-backed SQLAlchemy session for unit-level persistence behavior. Test that persisting a fake `ScanResult` creates one repo, one scan, packages, vulnerabilities, aliases, package-vulnerability links, reachability, and remediation tasks.
-
-Run:
-
-```bash
-cd backend
-PYTHONPATH=. python3 -m unittest tests.test_persistence
-```
-
-Expected:
-
-```text
-FAILED
-```
-
-Failure should be about missing/incorrect persistence behavior, not import errors.
-
-- [ ] **Step 2: Implement minimal persistence fixes**
-
-Update `persist_scan_result` so it:
-
-- upserts repo by `full_name`
-- creates a new scan per scan call
-- stores all parsed packages
-- stores canonical vulnerabilities and aliases
-- stores remediation task rows matching public task output
-- commits only once per scan
-
-- [ ] **Step 3: Verify persistence test passes**
-
-Run:
-
-```bash
-PYTHONPATH=. python3 -m unittest tests.test_persistence
-```
-
-Expected:
-
-```text
-OK
-```
-
-- [ ] **Step 4: Add API persistence behavior test**
-
-Add a route test if FastAPI dependencies are installed. If not installed, keep this as a documented blocked check in README and verify after Task 1.
-
-- [ ] **Step 5: Run full tests**
-
-```bash
-PYTHONPATH=. python3 -m unittest discover tests
-```
-
-Expected:
-
-```text
-OK
-```
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add backend/app/services/persistence.py backend/app/api/routes_repos.py backend/tests/test_persistence.py
-git commit -m "Persist scan results"
-```
-
-## Task 3: Improve CLI Report
-
-**Files:**
-
-- Modify: `backend/app/cli.py`
-- Test: `backend/tests/test_cli.py`
-
-- [ ] **Step 1: Write failing CLI report test**
-
-Test human-readable output from `vulnsage scan --offline` and a fake scan path. Assert output includes:
-
-- repo name
-- package count
-- remediation task count
-- top package
-- priority
-- fixed version
-
-Also assert it does not include `raw`, `details`, `PoC`, or `payload`.
-
-- [ ] **Step 2: Implement report formatter**
-
-Add a small formatter function in `backend/app/cli.py`:
-
-```python
-def format_scan_summary(result: ScanResult) -> str:
-    ...
-```
-
-It should print top 5 remediation tasks with:
-
-```text
-P0_RELEASE_BLOCKER lodash 4.17.20 -> 4.17.21 CVE-...
-Reason: production + possibly_reachable + fix available
-Evidence: src/upload/receiptParser.ts
-```
-
-- [ ] **Step 3: Verify CLI tests**
-
-```bash
-PYTHONPATH=. python3 -m unittest tests.test_cli
-```
-
-Expected:
-
-```text
-OK
-```
-
-- [ ] **Step 4: Live CLI smoke**
-
-```bash
-PYTHONPATH=. python3 -m app.cli scan ../demo-repos/payments-api
-```
-
-Expected:
-
-```text
-Scan complete: payments-api
-Release blockers: 2
-```
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add backend/app/cli.py backend/tests/test_cli.py
-git commit -m "Improve scan CLI report"
-```
-
-## Task 4: Add Eval Harness V1
-
-**Files:**
+## Current State
+
+Done:
+
+- local repo scan
+- Node `package.json` and `package-lock.json` parser
+- OSV client
+- vulnerability normalization and alias dedupe
+- safe public output that redacts raw advisory details
+- reachability signals from imports/routes/CODEOWNERS
+- deterministic risk scoring
+- patch/test/rollback plan scaffold
+- CLI and FastAPI skeleton
+- DB models/migration scaffold
+- demo repo
+- unit tests for parser, OSV client, normalizer, risk scoring, and scan flow
+- deterministic eval harness with 10 scanner-executed fixture cases
+- verifier/nemesis report checks for missing findings, false positives, evidence, priority, fixed version, unsupported claims, and unsafe output
+- scanner hardening for incomplete OSV failures, malformed OSV payloads, mismatched advisories, exact-version-only OSV queries, and unsafe public strings
+
+Known blockers:
+
+- Docker and FastAPI dependencies were not available in this shell, so DB/API smoke checks are not verified here
+
+---
+
+## Coffee vs Matcha
+
+Coffee:
+
+- find vulnerable dependencies
+- avoid duplicate or over-merged alerts
+- identify direct/transitive and prod/dev context
+- connect package usage to source evidence
+- rank high production risk above critical dev-only noise
+- produce safe structured output
+- prove quality with evals and verifier checks
+
+Coffee machine:
+
+- fixture eval cases
+- deterministic verifier
+- focused tests
+- Karen audit gate
+- clear docs for future agents
+
+Matcha for later:
+
+- frontend dashboard
+- GitHub App
+- automatic PR creation
+- Jira/Slack
+- full RAG/pgvector retrieval
+- LangGraph multi-agent orchestration
+- executive reports
+
+---
+
+## Task 1: Add Eval And Verifier Harness
+
+Files:
 
 - Create: `backend/app/eval/metrics.py`
+- Create: `backend/app/eval/verifier.py`
 - Create: `backend/app/eval/run_eval.py`
 - Create: `backend/app/eval/cases/backend_mvp.jsonl`
 - Test: `backend/tests/test_eval_metrics.py`
+- Test: `backend/tests/test_report_verifier.py`
 
-- [ ] **Step 1: Write failing metric tests**
+- [x] Write tests for exact-match metrics, evidence coverage, unsafe output detection, unsupported claim detection, missing expected task, wrong priority, and wrong fixed version.
+- [x] Implement pure metric functions with no network dependency.
+- [x] Implement verifier output with `passed`, `scores`, `findings`, and `summary`.
+- [x] Add at least 10 fixture cases.
+- [x] Make `python -m app.eval.run_eval` print JSON metrics.
+- [x] Run targeted eval tests.
+- [x] Run full unit suite.
 
-Test exact-match accuracy for:
-
-- vulnerability affected
-- fixed version
-- dependency scope
-- reachability
-- priority
-- evidence present
-
-- [ ] **Step 2: Implement metrics**
-
-Implement pure functions:
-
-```python
-def exact_match_accuracy(rows: list[dict], key: str) -> float: ...
-def score_case(expected: dict, actual: dict) -> dict: ...
-def summarize_scores(scores: list[dict]) -> dict: ...
-```
-
-- [ ] **Step 3: Add 10 eval cases**
-
-Cases must cover:
-
-- direct production high issue
-- critical dev-only issue
-- transitive high issue
-- no fixed version
-- unknown reachability
-- alias dedupe
-- package reference dedupe guard
-- unsafe details redaction
-- owner inference
-- route evidence present
-
-- [ ] **Step 4: Implement eval runner**
-
-`python -m app.eval.run_eval` should load JSONL, run deterministic checks against fixture outputs, and print metric JSON.
-
-- [ ] **Step 5: Verify**
-
-```bash
-PYTHONPATH=. python3 -m unittest tests.test_eval_metrics
-PYTHONPATH=. python3 -m app.eval.run_eval
-```
-
-Expected:
+Success:
 
 ```text
 vulnerability_match_accuracy >= 0.85
 fixed_version_accuracy >= 0.85
 citation_precision >= 0.80
+unsupported_claim_rate <= 0.10
 ```
 
-- [ ] **Step 6: Commit**
+---
 
-```bash
-git add backend/app/eval backend/tests/test_eval_metrics.py
-git commit -m "Add backend MVP eval harness"
-```
+## Task 2: Improve Finding Quality Based On Eval Failures
 
-## Task 5: Add Local Trace Fallback
+Files likely touched:
 
-**Files:**
+- `backend/app/services/reachability.py`
+- `backend/app/services/risk_scoring.py`
+- `backend/app/services/vulnerability_normalizer.py`
+- `backend/app/services/patch_planner.py`
+- `backend/app/services/scan_service.py`
+
+- [x] Run eval harness.
+- [x] Fix only MVP-blocking failures found in the scanner.
+- [x] Prioritize false positives, false negatives, unsafe output, wrong priority, wrong fixed version, and weak evidence.
+- [x] Keep changes deterministic.
+- [x] Add or update tests for each fix.
+
+---
+
+## Task 3: CLI Demo Report
+
+Files:
+
+- Modify: `backend/app/cli.py`
+- Test: `backend/tests/test_cli.py`
+
+- [ ] Add a small human-readable report formatter.
+- [ ] Show repo, package count, task count, top priorities, fixed version, and evidence source.
+- [ ] Assert report does not include raw details, PoC text, exploit links, or payload language.
+
+---
+
+## Task 4: Persistence And API Smoke
+
+Files:
+
+- Modify: `backend/app/services/persistence.py`
+- Modify: `backend/app/api/routes_repos.py`
+- Test: `backend/tests/test_persistence.py`
+
+- [ ] Unit-test persistence with SQLite where possible.
+- [ ] Verify Postgres/pgvector only when Docker is available.
+- [ ] Keep DB work scoped to storing scanner outputs.
+- [ ] Do not start frontend work.
+
+---
+
+## Task 5: Local Trace Fallback
+
+Files:
 
 - Create: `backend/app/services/trace_service.py`
 - Modify: `backend/app/services/scan_service.py`
-- Modify: `backend/app/models/core.py` only if model change is required
 - Test: `backend/tests/test_trace_service.py`
 
-- [ ] **Step 1: Write failing trace tests**
+- [ ] Record scan start, OSV query, normalization, risk score, and scan complete.
+- [ ] Redact unsafe details and secret-like values.
+- [ ] Keep trace format simple enough to move into Postgres later.
 
-Test trace events can be created for:
+---
 
-- scan start
-- OSV package query
-- normalization result
-- risk score
-- scan complete
+## Verification Gate
 
-Assert no event stores raw advisory details or secret-like values.
-
-- [ ] **Step 2: Implement in-memory trace collector**
-
-Add a lightweight collector that can later be backed by DB:
-
-```python
-class TraceCollector:
-    def record(self, agent_name: str, input_json: dict, output_json: dict) -> None: ...
-```
-
-- [ ] **Step 3: Wire optional trace collector into ScanService**
-
-Keep constructor backward compatible:
-
-```python
-ScanService(osv_client=client, trace_collector=collector)
-```
-
-- [ ] **Step 4: Verify**
+Before each commit:
 
 ```bash
-PYTHONPATH=. python3 -m unittest tests.test_trace_service tests.test_scan_service
+cd backend
+PYTHONPATH=. python3 -m unittest discover tests
+PYTHONPATH=. python3 -m app.eval.run_eval
 ```
 
-Expected:
-
-```text
-OK
-```
-
-- [ ] **Step 5: Commit**
+When network is allowed:
 
 ```bash
-git add backend/app/services/trace_service.py backend/app/services/scan_service.py backend/tests/test_trace_service.py backend/tests/test_scan_service.py
-git commit -m "Add local scan tracing"
+cd backend
+PYTHONPATH=. python3 -m app.cli scan ../demo-repos/payments-api --json
 ```
 
-## Task 6: Final MVP Demo Path
-
-**Files:**
-
-- Modify: `README.md`
-- Create: `docs/demo-script.md`
-- Test: no new test file required
-
-- [ ] **Step 1: Write demo script**
-
-Include exact commands:
+When Docker and deps are available:
 
 ```bash
 docker compose up -d postgres
 cd backend
 alembic upgrade head
-uvicorn app.main:app --reload
-PYTHONPATH=. python -m app.cli scan ../demo-repos/payments-api
-PYTHONPATH=. python -m app.eval.run_eval
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-- [ ] **Step 2: Include expected demo claims**
+Manager/Karen gate:
 
-The script must show:
+- verifier findings reviewed
+- only MVP blockers fixed now
+- matcha moved to backlog
 
-- local scan works
-- live OSV data works
-- high production issue can outrank critical dev-only issue
-- public output is safe
-- eval metrics run
-- traces exist
+---
 
-- [ ] **Step 3: Run final verification**
+## Acceptance For This Slice
 
-```bash
-cd backend
-PYTHONPATH=. python3 -m unittest discover tests
-PYTHONPATH=. python3 -m app.cli scan ../demo-repos/payments-api --offline
-```
-
-If deps/DB are installed:
-
-```bash
-alembic upgrade head
-curl http://127.0.0.1:8000/health
-curl -X POST http://127.0.0.1:8000/repos/scan-local \
-  -H "Content-Type: application/json" \
-  -d '{"path":"../demo-repos/payments-api"}'
-```
-
-- [ ] **Step 4: Karen-style final audit**
-
-Dispatch or manually run review against:
-
-- MVP acceptance criteria
-- test coverage
-- unsafe output
-- persistence correctness
-- README/demo accuracy
-
-- [ ] **Step 5: Commit and push**
-
-```bash
-git add README.md docs/demo-script.md
-git commit -m "Document backend MVP demo"
-git push
-```
-
-## Acceptance Checklist
-
-- [ ] CLI scan works offline and live.
-- [ ] API health works.
-- [ ] API scan endpoint works.
-- [ ] DB migration runs.
-- [ ] Scan endpoint persists rows.
-- [ ] Read endpoints return persisted scan data.
-- [ ] Public output excludes raw advisory bodies and unsafe PoC/payload references.
-- [ ] Eval runner reports deterministic metrics.
-- [ ] Trace fallback records scan events.
-- [ ] README/demo docs let another agent reproduce MVP.
-
+- [x] Plan reflects coffee-first MVP.
+- [x] Eval/verifier harness exists.
+- [x] At least 10 deterministic cases exist.
+- [x] Tests pass.
+- [x] Eval runner prints metric JSON.
+- [x] Karen auditor findings are reviewed.
+- [ ] Commit is pushed.

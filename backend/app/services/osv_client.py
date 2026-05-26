@@ -67,6 +67,7 @@ class OsvClient:
 
         vulnerabilities = data.get("vulns", [])
         if not isinstance(vulnerabilities, list):
-            return []
+            raise OsvClientError("OSV returned malformed vulnerability list")
+        if not all(isinstance(item, dict) for item in vulnerabilities):
+            raise OsvClientError("OSV returned malformed vulnerability entries")
         return [item for item in vulnerabilities if isinstance(item, dict)]
-

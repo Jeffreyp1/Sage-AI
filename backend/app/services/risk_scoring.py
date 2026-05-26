@@ -72,6 +72,18 @@ def assign_priority(score: int, risk_input: RiskInput) -> str:
     if risk_input.known_exploited and risk_input.runtime_scope == "production":
         return "P0_RELEASE_BLOCKER"
     if (
+        not risk_input.fix_available
+        and risk_input.severity.upper() in {"CRITICAL", "HIGH"}
+        and risk_input.runtime_scope == "production"
+    ):
+        return "NEEDS_HUMAN_REVIEW"
+    if (
+        risk_input.reachability == "unknown"
+        and risk_input.severity.upper() == "CRITICAL"
+        and risk_input.runtime_scope in {"production", "unknown"}
+    ):
+        return "NEEDS_HUMAN_REVIEW"
+    if (
         risk_input.severity.upper() in {"CRITICAL", "HIGH"}
         and risk_input.runtime_scope == "production"
         and risk_input.reachability in {"likely_reachable", "possibly_reachable"}
@@ -83,8 +95,6 @@ def assign_priority(score: int, risk_input: RiskInput) -> str:
         return "P1_FIX_THIS_SPRINT"
     if score >= 40:
         return "P2_SCHEDULE_SOON"
-    if risk_input.reachability == "unknown" and risk_input.severity.upper() == "CRITICAL":
-        return "NEEDS_HUMAN_REVIEW"
     return "P3_MONITOR_DEFER"
 
 
@@ -143,7 +153,7 @@ def risk_rationale(risk_input: RiskInput, score: int, priority: str) -> List[str
     if risk_input.known_exploited:
         rationale.append("Known exploited status is confirmed by an upstream source.")
     else:
-        rationale.append("Known exploited status is not confirmed in this scan.")
+        rationale.append("Known exploited status was not evaluated in this scan.")
     if risk_input.fix_available:
         rationale.append("A fixed version is available.")
     else:
