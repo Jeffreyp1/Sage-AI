@@ -106,6 +106,49 @@ class AIContractsTest(unittest.TestCase):
         self.assertFalse(request.safety_constraints.may_change_priority)
         self.assertFalse(request.safety_constraints.may_change_risk_score)
 
+    def test_validation_blocks_unsafe_text_in_citation_quote_note_and_errors(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            citations=[
+                Citation(
+                    evidence_id="ev-advisory",
+                    claim_id="claim-fact-1",
+                    quote="This quote includes proof of concept details.",
+                    note="This note includes a malicious payload.",
+                )
+            ],
+            errors=["Provider emitted exploit code."],
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertIn("AI response contains unsafe marker proof of concept.", result.errors)
+        self.assertIn("AI response contains unsafe marker malicious payload.", result.errors)
+        self.assertIn("AI response contains unsafe marker exploit code.", result.errors)
+
+    def test_validation_blocks_scanner_owned_identity_mutation(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            finding_id="finding-2",
+            package_name="different-package",
+            vulnerability_id="CVE-2026-9999",
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertEqual(
+            result.mutated_fields,
+            ["finding_id", "package_name", "vulnerability_id"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
