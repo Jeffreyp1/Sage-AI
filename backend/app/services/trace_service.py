@@ -28,6 +28,12 @@ GITHUB_TOKEN_PATTERN = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
 )
 BEARER_TOKEN_PATTERN = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE)
+TOKEN_KEY_PATTERN = r"(?:token|[A-Za-z][A-Za-z0-9_-]*(?:[_-]token|Token))"
+COOKIE_SECRET_NAME_PATTERN = (
+    r"(?:session(?:id)?|session[_-]?secret|sid|csrf[_-]?token|csrftoken|"
+    r"xsrf[_-]?token|auth(?:entication)?[_-]?token|access[_-]?token|"
+    r"refresh[_-]?token|%s)"
+) % TOKEN_KEY_PATTERN
 AUTHORIZATION_FRAGMENT_PATTERN = re.compile(
     r"(?P<prefix>\bauthorization\b\s*[:=]\s*)"
     r"(?P<secret>(?:Bearer|Basic|Digest|Token)\s+[A-Za-z0-9._~+/=-]+|[^\s,;]+)",
@@ -35,13 +41,18 @@ AUTHORIZATION_FRAGMENT_PATTERN = re.compile(
 )
 COOKIE_SECRET_FRAGMENT_PATTERN = re.compile(
     r"(?P<prefix>\bcookie\b\s*[:=]\s*)"
-    r"(?:session(?:id)?|session[_-]?secret|sid|token|auth(?:entication)?[_-]?token)"
-    r"\s*=\s*[^\s,;]+",
+    r"%s\s*=\s*[^\s,;]+" % COOKIE_SECRET_NAME_PATTERN,
+    re.IGNORECASE,
+)
+COOKIE_SECRET_PAIR_PATTERN = re.compile(
+    r"(?P<prefix>(?:^|[;,]\s*)%s\s*=\s*)" % COOKIE_SECRET_NAME_PATTERN
+    + r"(?P<secret>[^\s,;]+)",
     re.IGNORECASE,
 )
 INLINE_SECRET_ASSIGNMENT_PATTERN = re.compile(
-    r"(?P<prefix>\b(?:password|api[_-]?key|token|session[_-]?secret)\b\s*[:=]\s*)"
-    r"(?P<secret>[^\s,;&]+)",
+    r"(?P<prefix>\b(?:password|api[_-]?key|session[_-]?secret|%s)\b\s*[:=]\s*)"
+    % TOKEN_KEY_PATTERN
+    + r"(?P<secret>[^\s,;&]+)",
     re.IGNORECASE,
 )
 
@@ -157,6 +168,10 @@ def redact_secret_text(value: str) -> str:
     redacted = GITHUB_TOKEN_PATTERN.sub(REDACTED, value)
     redacted = BEARER_TOKEN_PATTERN.sub(REDACTED, redacted)
     redacted = AUTHORIZATION_FRAGMENT_PATTERN.sub(
+        lambda match: "%s%s" % (match.group("prefix"), REDACTED),
+        redacted,
+    )
+    redacted = COOKIE_SECRET_PAIR_PATTERN.sub(
         lambda match: "%s%s" % (match.group("prefix"), REDACTED),
         redacted,
     )
