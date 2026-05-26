@@ -13,7 +13,24 @@ SOURCE_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 SKIP_DIRS = {".git", "node_modules", "dist", "build", "coverage", ".next"}
 NON_PRODUCTION_DIRS = {"test", "tests", "spec", "specs", "e2e", "cypress", "__tests__"}
 PRODUCTION_DIRS = {"src", "app", "routes", "controllers", "services", "lib"}
-PRODUCTION_ENTRYPOINTS = {"server.js", "server.ts", "server.mjs", "server.cjs"}
+PRODUCTION_ENTRYPOINTS = {
+    "app.cjs",
+    "app.js",
+    "app.mjs",
+    "app.ts",
+    "index.cjs",
+    "index.js",
+    "index.mjs",
+    "index.ts",
+    "main.cjs",
+    "main.js",
+    "main.mjs",
+    "main.ts",
+    "server.cjs",
+    "server.js",
+    "server.mjs",
+    "server.ts",
+}
 TEST_FILE_MARKERS = (".test.", ".spec.", ".e2e.", ".cy.")
 
 
