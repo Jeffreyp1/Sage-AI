@@ -13,8 +13,8 @@ SOURCE_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 SKIP_DIRS = {".git", "node_modules", "dist", "build", "coverage", ".next"}
 NON_PRODUCTION_DIRS = {"test", "tests", "spec", "specs", "e2e", "cypress", "__tests__"}
 PRODUCTION_DIRS = {"src", "app", "routes", "controllers", "services", "lib"}
-PRODUCTION_ENTRYPOINTS = {"server.js"}
-TEST_FILE_MARKERS = (".test", ".spec")
+PRODUCTION_ENTRYPOINTS = {"server.js", "server.ts", "server.mjs", "server.cjs"}
+TEST_FILE_MARKERS = (".test.", ".spec.", ".e2e.", ".cy.")
 
 
 @dataclass
@@ -176,17 +176,13 @@ def is_production_source(relative_path: str) -> bool:
         return False
     if is_test_source_file(parts[-1]):
         return False
-    if path in PRODUCTION_ENTRYPOINTS:
+    if parts[-1] in PRODUCTION_ENTRYPOINTS:
         return True
-    return parts[0] in PRODUCTION_DIRS
+    return any(part in PRODUCTION_DIRS for part in parts)
 
 
 def is_test_source_file(filename: str) -> bool:
-    return any(
-        filename.endswith("%s%s" % (marker, suffix))
-        for marker in TEST_FILE_MARKERS
-        for suffix in SOURCE_SUFFIXES
-    )
+    return any(marker in filename for marker in TEST_FILE_MARKERS)
 
 
 def read_optional(path: Path) -> str:

@@ -24,7 +24,12 @@ class ReachabilityTest(unittest.TestCase):
     def test_node_app_layout_imports_are_production_reachable(self):
         cases = {
             "server.js": 'const runtimeLib = require("runtime-lib");\n',
+            "backend/server.js": 'const runtimeLib = require("runtime-lib");\n',
+            "backend/server.ts": 'import runtimeLib from "runtime-lib";\n',
+            "packages/api/server.mjs": 'import runtimeLib from "runtime-lib";\n',
+            "packages/api/server.cjs": 'const runtimeLib = require("runtime-lib");\n',
             "app/routes/foo.js": 'import runtimeLib from "runtime-lib";\n',
+            "packages/api/app/routes/foo.js": 'import runtimeLib from "runtime-lib";\n',
         }
 
         for source_path, contents in cases.items():
@@ -48,6 +53,10 @@ class ReachabilityTest(unittest.TestCase):
         cases = {
             "tests/foo.test.js": 'const testTool = require("test-tool");\n',
             "e2e/login.js": 'import testTool from "test-tool";\n',
+            "src/login.e2e.ts": 'import testTool from "test-tool";\n',
+            "src/components/Button.cy.tsx": 'import testTool from "test-tool";\n',
+            "app/routes/foo.spec.js": 'import testTool from "test-tool";\n',
+            "app/routes/foo.test.js": 'import testTool from "test-tool";\n',
         }
 
         for source_path, contents in cases.items():
@@ -73,7 +82,12 @@ class ReachabilityTest(unittest.TestCase):
     def test_production_source_classifier_keeps_test_and_generated_paths_out(self):
         production_paths = [
             "server.js",
+            "backend/server.js",
+            "backend/server.ts",
+            "packages/api/server.mjs",
+            "packages/api/server.cjs",
             "app/routes/foo.js",
+            "packages/api/app/routes/foo.js",
             "routes/foo.js",
             "controllers/foo.js",
             "services/foo.js",
@@ -88,7 +102,10 @@ class ReachabilityTest(unittest.TestCase):
             "node_modules/pkg/index.js",
             "build/server.js",
             "dist/routes/foo.js",
+            "src/login.e2e.ts",
+            "src/components/Button.cy.tsx",
             "app/routes/foo.spec.js",
+            "app/routes/foo.test.js",
             "routes/foo.test.js",
         ]
 
