@@ -3,7 +3,7 @@
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import re
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from app.services.dependency_parser import ParsedDependency
 from app.services.repo_ingestion import owner_for_path
@@ -11,6 +11,10 @@ from app.services.repo_ingestion import owner_for_path
 
 SOURCE_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 SKIP_DIRS = {".git", "node_modules", "dist", "build", "coverage", ".next"}
+NON_PRODUCTION_DIRS = {"test", "tests", "spec", "specs", "e2e", "cypress", "__tests__"}
+PRODUCTION_DIRS = {"src", "app", "routes", "controllers", "services", "lib"}
+PRODUCTION_ENTRYPOINTS = {"server.js"}
+TEST_FILE_MARKERS = (".test", ".spec")
 
 
 @dataclass
@@ -153,24 +157,36 @@ def find_internal_references(root: Path, relative_source: str) -> List[Dict[str,
     return hits
 
 
-def iter_source_files(root: Path):
+def iter_source_files(root: Path) -> Iterable[Path]:
     for path in root.rglob("*"):
         if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
             continue
-        if any(part in SKIP_DIRS for part in path.parts):
+        relative_parts = path.relative_to(root).parts
+        if any(part in SKIP_DIRS for part in relative_parts):
             continue
         yield path
 
 
 def is_production_source(relative_path: str) -> bool:
-    path = relative_path.replace("\\", "/").lower()
-    if "/test/" in path or "/tests/" in path or "__tests__" in path:
+    path = relative_path.replace("\\", "/").strip("/").lower()
+    parts = [part for part in path.split("/") if part and part != "."]
+    if not parts:
         return False
-    if path.endswith(".test.ts") or path.endswith(".spec.ts"):
+    if any(part in SKIP_DIRS or part in NON_PRODUCTION_DIRS for part in parts):
         return False
-    if path.endswith(".test.js") or path.endswith(".spec.js"):
+    if is_test_source_file(parts[-1]):
         return False
-    return path.startswith("src/")
+    if path in PRODUCTION_ENTRYPOINTS:
+        return True
+    return parts[0] in PRODUCTION_DIRS
+
+
+def is_test_source_file(filename: str) -> bool:
+    return any(
+        filename.endswith("%s%s" % (marker, suffix))
+        for marker in TEST_FILE_MARKERS
+        for suffix in SOURCE_SUFFIXES
+    )
 
 
 def read_optional(path: Path) -> str:
