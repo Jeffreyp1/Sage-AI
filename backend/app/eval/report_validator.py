@@ -307,15 +307,14 @@ def unsupported_claim_pattern(marker: str) -> re.Pattern[str]:
 
 
 def is_negated_claim(value: str, marker_start: int) -> bool:
-    prefix = value[max(0, marker_start - 48) : marker_start]
+    prefix = value[:marker_start]
     words = re.findall(r"[A-Za-z]+", prefix.lower())
     if len(words) == 0:
         return False
 
-    recent_words = words[-5:]
-    if recent_words[-2:] == ["not", "only"]:
+    if len(words) >= 2 and words[-2:] == ["not", "only"]:
         return False
-    return any(word in {"not", "never", "no", "without"} for word in recent_words)
+    return words[-1] in {"not", "never", "no", "without"}
 
 
 def duplicate_task_key(

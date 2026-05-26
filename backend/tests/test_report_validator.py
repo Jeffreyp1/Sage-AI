@@ -178,7 +178,7 @@ class ReportValidatorTest(unittest.TestCase):
     def test_allows_negated_remote_exploitable_claim_but_blocks_positive_claim(self):
         report = clean_report()
         report["remediation_tasks"][0]["risk"]["rationale"] = [
-            "This issue is not remotely exploitable in this service."
+            "This issue is not remotely exploitable based on retrieved evidence."
         ]
 
         negated_result = validate_report(report)
@@ -186,7 +186,7 @@ class ReportValidatorTest(unittest.TestCase):
         self.assertTrue(negated_result["passed"])
 
         report["remediation_tasks"][0]["risk"]["rationale"] = [
-            "This issue is remotely exploitable in exposed deployments."
+            "This issue is not patched and remotely exploitable in production."
         ]
 
         positive_result = validate_report(report)
