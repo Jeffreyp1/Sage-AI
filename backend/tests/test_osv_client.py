@@ -1,4 +1,5 @@
 import json
+import socket
 import unittest
 
 from app.services.osv_client import OsvClient, OsvClientError
@@ -52,6 +53,28 @@ class OsvClientTest(unittest.TestCase):
 
         with self.assertRaises(OsvClientError):
             client.query("lodash", "4.17.20", "npm")
+
+    def test_timeout_like_transport_error_becomes_osv_client_error(self):
+        def opener(_request, timeout):
+            raise socket.timeout("timed out")
+
+        client = OsvClient(api_url="https://example.test/query", opener=opener)
+
+        with self.assertRaises(OsvClientError) as caught:
+            client.query("lodash", "4.17.20", "npm")
+
+        self.assertIsInstance(caught.exception.__cause__, socket.timeout)
+
+    def test_unexpected_opener_failure_becomes_osv_client_error(self):
+        def opener(_request, timeout):
+            raise RuntimeError("opener exploded")
+
+        client = OsvClient(api_url="https://example.test/query", opener=opener)
+
+        with self.assertRaises(OsvClientError) as caught:
+            client.query("lodash", "4.17.20", "npm")
+
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
 
 
 if __name__ == "__main__":

@@ -59,6 +59,16 @@ class OsvClient:
             raise OsvClientError("OSV HTTP %s: %s" % (exc.code, detail)) from exc
         except error.URLError as exc:
             raise OsvClientError("OSV request failed: %s" % exc.reason) from exc
+        except UnicodeDecodeError as exc:
+            raise OsvClientError("OSV returned undecodable response") from exc
+        except TimeoutError as exc:
+            raise OsvClientError("OSV request timed out: %s" % exc) from exc
+        except OSError as exc:
+            raise OsvClientError("OSV request failed: %s" % exc) from exc
+        except OsvClientError:
+            raise
+        except Exception as exc:
+            raise OsvClientError("OSV request failed: %s" % exc) from exc
 
         try:
             data = json.loads(body)

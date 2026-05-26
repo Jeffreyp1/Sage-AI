@@ -1,23 +1,38 @@
 """Public-output sanitization for defensive security reports."""
 
+import re
 from collections.abc import Mapping
 
 
 UNSAFE_PUBLIC_MARKERS = (
     "malicious payload",
     "proof-of-concept",
+    "proof of concept",
+    "exploit code",
+    "exploit-code",
     "exploit payload",
     "exploit steps",
     "payload",
     "poc",
 )
 
+UNSAFE_PUBLIC_PATTERN = re.compile(
+    "|".join(
+        (
+            r"\bmalicious[\s._-]+payload\b",
+            r"\bproof[\s._-]+of[\s._-]+concept\b",
+            r"\bexploit[\s._-]+(?:code|payload|steps)\b",
+            r"\bp[\s._-]*o[\s._-]*c\b",
+            r"\bpayload\b",
+        )
+    ),
+    re.IGNORECASE,
+)
+
 
 def sanitize_text(value: str) -> str:
-    sanitized = value
-    for marker in UNSAFE_PUBLIC_MARKERS:
-        sanitized = replace_case_insensitive(sanitized, marker, "[redacted]")
-    return sanitized
+    value.lower()
+    return UNSAFE_PUBLIC_PATTERN.sub("[redacted]", value)
 
 
 def sanitize_public_value(value: object) -> object:
@@ -32,8 +47,7 @@ def sanitize_public_value(value: object) -> object:
 
 def contains_unsafe_public_text(value: object) -> bool:
     for text in walk_strings(value):
-        lowered = text.lower()
-        if any(marker in lowered for marker in UNSAFE_PUBLIC_MARKERS):
+        if UNSAFE_PUBLIC_PATTERN.search(text):
             return True
     return False
 
@@ -52,14 +66,6 @@ def walk_strings(value: object):
 
 
 def replace_case_insensitive(value: str, marker: str, replacement: str) -> str:
-    lowered = value.lower()
-    marker_lowered = marker.lower()
-    start = lowered.find(marker_lowered)
-    if start == -1:
-        return value
-    end = start + len(marker)
-    return (
-        value[:start]
-        + replacement
-        + replace_case_insensitive(value[end:], marker, replacement)
-    )
+    value.lower()
+    marker.lower()
+    return re.compile(re.escape(marker), re.IGNORECASE).sub(replacement, value)

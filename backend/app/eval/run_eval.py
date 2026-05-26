@@ -28,6 +28,10 @@ class FixtureOsvClient:
                 "ecosystem": ecosystem,
             }
         )
+        if version is not None:
+            explicit_key = "%s@%s#%s" % (package_name, version, ecosystem)
+            if explicit_key in self.responses:
+                return self.responses[explicit_key]
         return self.responses.get(package_name, [])
 
 
@@ -109,10 +113,16 @@ def write_fixture_repo(root: Path, fixture: dict[str, object]) -> None:
 
     files = fixture.get("files", {})
     if isinstance(files, dict):
+        root = root.resolve()
         for relative_path, content in files.items():
             if not isinstance(relative_path, str) or not isinstance(content, str):
                 continue
-            path = root / relative_path
+            fixture_path = Path(relative_path)
+            if fixture_path.is_absolute():
+                raise ValueError("fixture file path must be relative")
+            path = (root / fixture_path).resolve()
+            if not path.is_relative_to(root):
+                raise ValueError("fixture file path must stay under repo root")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
 
@@ -154,6 +164,12 @@ def verify_query_inputs(
 
 
 def expected_osv_queries(case: dict[str, object]) -> list[dict[str, object]]:
+    if "expected_osv_queries" in case:
+        expected_queries = case.get("expected_osv_queries")
+        if isinstance(expected_queries, list):
+            return [query for query in expected_queries if isinstance(query, dict)]
+        return []
+
     fixture = case.get("repo_fixture")
     if not isinstance(fixture, dict):
         return []
