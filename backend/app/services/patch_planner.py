@@ -22,6 +22,12 @@ class PatchPlan:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class SemverVersion:
+    parts: Tuple[int, int, int]
+    prerelease: Tuple[str, ...]
+
+
 def build_patch_plan(
     dependency: ParsedDependency,
     vulnerability: NormalizedVulnerability,
@@ -43,7 +49,7 @@ def build_patch_plan(
     steps = remediation_steps(dependency, target_version)
     steps.extend(["Run targeted tests", "Deploy to staging and verify affected flows"])
 
-    tests = test_commands or ["npm test"]
+    tests = list(test_commands) if len(test_commands) > 0 else ["npm test"]
     if dependency.name and any("upload" in ev.get("source", "") for ev in dependency.evidence):
         tests.append("npm run test:integration -- upload")
     if "npm run lint" not in tests:
@@ -73,22 +79,22 @@ def choose_target_version(
     current_version: Optional[str],
     fixed_versions: List[str],
 ) -> Optional[str]:
-    current_parts = semver_parts(current_version)
-    if current_parts is None:
+    current = semver_version(current_version)
+    if current is None:
         return None
 
-    candidates: List[Tuple[Tuple[int, int, int], str]] = []
+    candidates: List[Tuple[SemverVersion, str]] = []
     for version in fixed_versions:
-        target_parts = semver_parts(version)
-        if target_parts is None:
+        target = semver_version(version)
+        if target is None:
             continue
-        if target_parts >= current_parts:
-            candidates.append((target_parts, version.strip()))
+        if compare_semver(target, current) >= 0 and prerelease_target_allowed(current, target):
+            candidates.append((target, version.strip()))
 
     if len(candidates) == 0:
         return None
 
-    candidates.sort(key=lambda candidate: candidate[0])
+    candidates.sort(key=lambda candidate: semver_sort_key(candidate[0]))
     return candidates[0][1]
 
 
@@ -171,34 +177,75 @@ def pr_description_for(
 def infer_patch_complexity(current_version: Optional[str], target_version: Optional[str]) -> str:
     if not current_version or not target_version:
         return "unknown"
-    current_parts = semver_parts(current_version)
-    target_parts = semver_parts(target_version)
-    if not current_parts or not target_parts:
+    current = semver_version(current_version)
+    target = semver_version(target_version)
+    if not current or not target:
         return "unknown"
-    if target_parts[0] > current_parts[0]:
+    if target.parts[0] > current.parts[0]:
         return "high"
-    if target_parts[1] > current_parts[1]:
+    if target.parts[1] > current.parts[1]:
         return "low"
-    if target_parts >= current_parts:
+    if compare_semver(target, current) >= 0:
         return "low"
     return "unknown"
 
 
-def semver_parts(version: Optional[str]) -> Optional[Tuple[int, int, int]]:
+def semver_version(version: Optional[str]) -> Optional[SemverVersion]:
     if not version:
         return None
     clean = version.strip()
     if clean.startswith("v"):
         clean = clean[1:]
-    clean = clean.split("-", 1)[0]
     clean = clean.split("+", 1)[0]
-    parts = clean.split(".")
+    release, separator, prerelease = clean.partition("-")
+    parts = release.split(".")
     if len(parts) != 3:
         return None
     try:
-        return int(parts[0]), int(parts[1]), int(parts[2])
+        parsed_parts = int(parts[0]), int(parts[1]), int(parts[2])
     except ValueError:
         return None
+    if any(part < 0 for part in parsed_parts):
+        return None
+    if not separator:
+        return SemverVersion(parts=parsed_parts, prerelease=())
+    prerelease_parts = tuple(prerelease.split("."))
+    if len(prerelease_parts) == 0 or any(part == "" for part in prerelease_parts):
+        return None
+    return SemverVersion(parts=parsed_parts, prerelease=prerelease_parts)
+
+
+def semver_sort_key(
+    version: SemverVersion,
+) -> Tuple[Tuple[int, int, int], int, Tuple[Tuple[int, int, str], ...]]:
+    release_weight = 1 if len(version.prerelease) == 0 else 0
+    return version.parts, release_weight, prerelease_sort_key(version.prerelease)
+
+
+def prerelease_sort_key(prerelease: Tuple[str, ...]) -> Tuple[Tuple[int, int, str], ...]:
+    output: List[Tuple[int, int, str]] = []
+    for identifier in prerelease:
+        if identifier.isdigit():
+            output.append((0, int(identifier), ""))
+        else:
+            output.append((1, 0, identifier))
+    return tuple(output)
+
+
+def compare_semver(left: SemverVersion, right: SemverVersion) -> int:
+    left_key = semver_sort_key(left)
+    right_key = semver_sort_key(right)
+    if left_key > right_key:
+        return 1
+    if left_key < right_key:
+        return -1
+    return 0
+
+
+def prerelease_target_allowed(current: SemverVersion, target: SemverVersion) -> bool:
+    if len(target.prerelease) == 0:
+        return True
+    return len(current.prerelease) > 0 and current.parts == target.parts
 
 
 def dedupe_keep_order(values: List[str]) -> List[str]:

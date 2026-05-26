@@ -32,6 +32,39 @@ class PatchPlannerTest(unittest.TestCase):
         self.assertEqual(plan.breaking_change_risk, "unknown")
         self.assertIn("Review advisory", plan.steps[0])
 
+    def test_requires_review_when_fixed_version_is_lower_prerelease(self):
+        plan = build_patch_plan(
+            dependency=dependency(current_version="1.2.4"),
+            vulnerability=vulnerability(fixed_versions=["1.2.4-beta.1"]),
+            test_commands=[],
+        )
+
+        self.assertEqual(plan.recommended_action, "needs_human_review")
+        self.assertIsNone(plan.target_version)
+
+    def test_accepts_fixed_version_equal_to_installed_version(self):
+        plan = build_patch_plan(
+            dependency=dependency(current_version="1.2.4"),
+            vulnerability=vulnerability(fixed_versions=["1.2.4"]),
+            test_commands=[],
+        )
+
+        self.assertEqual(plan.recommended_action, "upgrade")
+        self.assertEqual(plan.target_version, "1.2.4")
+        self.assertEqual(plan.patch_complexity, "low")
+
+    def test_does_not_mutate_provided_test_commands(self):
+        test_commands = ["npm test"]
+
+        plan = build_patch_plan(
+            dependency=dependency(current_version="1.2.4"),
+            vulnerability=vulnerability(fixed_versions=["1.2.5"]),
+            test_commands=test_commands,
+        )
+
+        self.assertEqual(test_commands, ["npm test"])
+        self.assertEqual(plan.test_plan, ["npm test", "npm run lint"])
+
     def test_direct_dependency_upgrade_uses_safe_target(self):
         plan = build_patch_plan(
             dependency=dependency(current_version="2.1.4"),
