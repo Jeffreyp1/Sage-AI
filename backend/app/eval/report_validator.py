@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Optional
 
@@ -18,6 +19,7 @@ FORBIDDEN_PUBLIC_KEYS = {"raw", "details"}
 HUMAN_REVIEW_PRIORITY = "NEEDS_HUMAN_REVIEW"
 UNSUPPORTED_CLAIM_MARKERS = (
     "remote exploitable",
+    "remotely exploitable",
     "confirmed exploitable",
     "actively exploited",
 )
@@ -33,6 +35,12 @@ class ValidationFinding:
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ParsedVersion:
+    release: tuple[int, ...]
+    prerelease: Optional[tuple[str, ...]]
 
 
 def validate_report(report: object) -> dict[str, object]:
@@ -115,7 +123,7 @@ def duplicate_task_findings(tasks: TaskList) -> list[ValidationFinding]:
         if package_name is None or current_version is None or canonical_id is None:
             continue
 
-        key = (package_name, current_version, canonical_id)
+        key = duplicate_task_key(package_name, current_version, canonical_id)
         first_index = seen.get(key)
         if first_index is None:
             seen[key] = index
@@ -199,7 +207,7 @@ def has_meaningful_evidence(value: object) -> bool:
             return True
         if not isinstance(item, Mapping):
             continue
-        for field_name in ("source", "claim", "type"):
+        for field_name in ("source", "claim"):
             field_value = item.get(field_name)
             if isinstance(field_value, str) and field_value.strip() != "":
                 return True
@@ -272,21 +280,52 @@ def unsafe_public_text_findings(report: Mapping[object, object]) -> list[Validat
 
 def unsupported_claim_findings(report: Mapping[object, object]) -> list[ValidationFinding]:
     findings: list[ValidationFinding] = []
-    markers = [marker.lower() for marker in UNSUPPORTED_CLAIM_MARKERS]
+    marker_patterns = [
+        (marker, unsupported_claim_pattern(marker)) for marker in UNSUPPORTED_CLAIM_MARKERS
+    ]
     for path, value in walk_strings_with_paths(report):
-        lowered = value.lower()
-        for marker in markers:
-            if marker not in lowered:
-                continue
-            findings.append(
-                ValidationFinding(
-                    severity="high",
-                    code="unsupported_claim_marker",
-                    message="Public report contains unsupported claim marker %s" % marker,
-                    path=path,
+        for marker, pattern in marker_patterns:
+            for match in pattern.finditer(value):
+                if is_negated_claim(value, match.start()):
+                    continue
+                findings.append(
+                    ValidationFinding(
+                        severity="high",
+                        code="unsupported_claim_marker",
+                        message="Public report contains unsupported claim marker %s" % marker,
+                        path=path,
+                    )
                 )
-            )
+                break
     return findings
+
+
+def unsupported_claim_pattern(marker: str) -> re.Pattern[str]:
+    parts = [re.escape(part) for part in marker.split()]
+    phrase = r"[\s._-]+".join(parts)
+    return re.compile(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % phrase, re.IGNORECASE)
+
+
+def is_negated_claim(value: str, marker_start: int) -> bool:
+    prefix = value[max(0, marker_start - 48) : marker_start]
+    words = re.findall(r"[A-Za-z]+", prefix.lower())
+    if len(words) == 0:
+        return False
+
+    recent_words = words[-5:]
+    if recent_words[-2:] == ["not", "only"]:
+        return False
+    return any(word in {"not", "never", "no", "without"} for word in recent_words)
+
+
+def duplicate_task_key(
+    package_name: str, current_version: str, canonical_id: str
+) -> tuple[str, str, str]:
+    return (
+        package_name.strip().casefold(),
+        current_version.strip(),
+        canonical_id.strip().casefold(),
+    )
 
 
 def walk_strings_with_paths(value: object, path: str = "") -> Iterable[tuple[str, str]]:
@@ -308,20 +347,20 @@ def walk_strings_with_paths(value: object, path: str = "") -> Iterable[tuple[str
 def is_downgrade(current_version: Optional[str], target_version: Optional[str]) -> bool:
     if current_version is None or target_version is None:
         return False
-    current_key = version_key(current_version)
-    target_key = version_key(target_version)
-    if current_key is None or target_key is None:
+    current = parse_version(current_version)
+    target = parse_version(target_version)
+    if current is None or target is None:
         return False
-    return target_key < current_key
+    return compare_versions(target, current) < 0
 
 
-def version_key(version: str) -> Optional[tuple[int, ...]]:
+def parse_version(version: str) -> Optional[ParsedVersion]:
     clean = version.strip().lstrip("v")
     if clean == "":
         return None
-    clean = clean.split("-", 1)[0]
     clean = clean.split("+", 1)[0]
-    parts = clean.split(".")
+    release_text, prerelease_text = split_prerelease(clean)
+    parts = release_text.split(".")
     numbers: list[int] = []
     for part in parts:
         if part == "":
@@ -333,7 +372,82 @@ def version_key(version: str) -> Optional[tuple[int, ...]]:
         return None
     while len(numbers) < 3:
         numbers.append(0)
-    return tuple(numbers)
+    prerelease = parse_prerelease(prerelease_text)
+    if prerelease_text is not None and prerelease is None:
+        return None
+    return ParsedVersion(release=tuple(numbers), prerelease=prerelease)
+
+
+def split_prerelease(version: str) -> tuple[str, Optional[str]]:
+    if "-" not in version:
+        return version, None
+    release_text, prerelease_text = version.split("-", 1)
+    return release_text, prerelease_text
+
+
+def parse_prerelease(value: Optional[str]) -> Optional[tuple[str, ...]]:
+    if value is None:
+        return None
+    identifiers = tuple(value.split("."))
+    if len(identifiers) == 0:
+        return None
+    for identifier in identifiers:
+        if identifier == "":
+            return None
+        if re.fullmatch(r"[0-9A-Za-z-]+", identifier) is None:
+            return None
+    return identifiers
+
+
+def compare_versions(left: ParsedVersion, right: ParsedVersion) -> int:
+    if left.release < right.release:
+        return -1
+    if left.release > right.release:
+        return 1
+    return compare_prerelease(left.prerelease, right.prerelease)
+
+
+def compare_prerelease(
+    left: Optional[tuple[str, ...]], right: Optional[tuple[str, ...]]
+) -> int:
+    if left is None and right is None:
+        return 0
+    if left is None:
+        return 1
+    if right is None:
+        return -1
+
+    for left_part, right_part in zip(left, right):
+        part_result = compare_prerelease_part(left_part, right_part)
+        if part_result != 0:
+            return part_result
+    if len(left) < len(right):
+        return -1
+    if len(left) > len(right):
+        return 1
+    return 0
+
+
+def compare_prerelease_part(left: str, right: str) -> int:
+    left_is_number = left.isdigit()
+    right_is_number = right.isdigit()
+    if left_is_number and right_is_number:
+        left_number = int(left)
+        right_number = int(right)
+        if left_number < right_number:
+            return -1
+        if left_number > right_number:
+            return 1
+        return 0
+    if left_is_number:
+        return -1
+    if right_is_number:
+        return 1
+    if left < right:
+        return -1
+    if left > right:
+        return 1
+    return 0
 
 
 def value_at(data: Mapping[object, object], path: str) -> object:

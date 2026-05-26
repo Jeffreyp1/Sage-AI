@@ -84,10 +84,33 @@ class ReportValidatorTest(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("duplicate_task", finding_codes(result))
 
+    def test_detects_duplicate_task_identity_with_case_normalized_ids(self):
+        report = clean_report()
+        duplicate = deepcopy(report["remediation_tasks"][0])
+        duplicate["vulnerability"]["canonical_id"] = "cve-2025-12345"
+        report["remediation_tasks"].append(duplicate)
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("duplicate_task", finding_codes(result))
+
     def test_detects_downgrade_patch_target(self):
         report = clean_report()
         task = report["remediation_tasks"][0]
         task["patch_plan"]["target_version"] = "2.0.9"
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("downgrade_patch_target", finding_codes(result))
+
+    def test_detects_prerelease_patch_target_downgrade(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["package"]["current_version"] = "1.0.0"
+        task["vulnerability"]["fixed_versions"] = ["1.0.0-alpha.1"]
+        task["patch_plan"]["target_version"] = "1.0.0-alpha.1"
 
         result = validate_report(report)
 
@@ -129,6 +152,15 @@ class ReportValidatorTest(unittest.TestCase):
         self.assertIn("unsafe_public_text", codes)
         self.assertIn("forbidden_public_key", codes)
 
+    def test_detects_type_only_evidence_as_missing(self):
+        report = clean_report()
+        report["remediation_tasks"][0]["evidence"] = [{"type": "lockfile"}]
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("missing_evidence", finding_codes(result))
+
     def test_detects_missing_evidence_missing_priority_and_unsupported_claim(self):
         report = clean_report()
         task = report["remediation_tasks"][0]
@@ -142,6 +174,25 @@ class ReportValidatorTest(unittest.TestCase):
         self.assertIn("missing_evidence", codes)
         self.assertIn("missing_priority", codes)
         self.assertIn("unsupported_claim_marker", codes)
+
+    def test_allows_negated_remote_exploitable_claim_but_blocks_positive_claim(self):
+        report = clean_report()
+        report["remediation_tasks"][0]["risk"]["rationale"] = [
+            "This issue is not remotely exploitable in this service."
+        ]
+
+        negated_result = validate_report(report)
+
+        self.assertTrue(negated_result["passed"])
+
+        report["remediation_tasks"][0]["risk"]["rationale"] = [
+            "This issue is remotely exploitable in exposed deployments."
+        ]
+
+        positive_result = validate_report(report)
+
+        self.assertFalse(positive_result["passed"])
+        self.assertIn("unsupported_claim_marker", finding_codes(positive_result))
 
     def test_cli_prints_json_and_exits_nonzero_on_failure(self):
         report = clean_report()
