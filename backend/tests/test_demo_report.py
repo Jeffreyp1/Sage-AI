@@ -3,13 +3,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.eval.generate_demo_report import generate_report, main
+from app.eval.generate_demo_report import DEFAULT_REPO_PATH, generate_report, main
 from app.eval.report_validator import validate_report
 
 
 class DemoReportTest(unittest.TestCase):
     def test_generate_report_uses_fixture_osv_and_passes_validator(self):
-        report = generate_report(Path("../demo-repos/payments-api"))
+        report = generate_report(DEFAULT_REPO_PATH)
 
         validation = validate_report(report)
         self.assertTrue(validation["passed"], validation)
