@@ -163,6 +163,43 @@ def test_persist_scan_result_prevents_duplicate_natural_records():
     assert db.query(RemediationTask).count() == 1
 
 
+def test_persist_scan_result_reuses_legacy_empty_string_package_identity():
+    db = make_session()
+    result = deterministic_scan_result()
+    result.packages[0].current_version = None
+    result.remediation_tasks[0].package["current_version"] = None
+    repo = Repo(
+        id="repo-a",
+        name="payments-api",
+        full_name="local/payments-api",
+        provider="local",
+    )
+    legacy_package = Package(
+        id="legacy-package",
+        repo_id=repo.id,
+        name="archive-utils",
+        ecosystem="npm",
+        current_version="",
+        parent_package="",
+        dependency_type="dependencies",
+        is_direct=True,
+    )
+    db.add(repo)
+    db.add(legacy_package)
+    db.commit()
+
+    scan = persist_scan_result(db, result)
+
+    assert scan.repo_id == repo.id
+    package = db.query(Package).filter(Package.name == "archive-utils").one()
+    assert package.id == legacy_package.id
+    assert package.current_version == ""
+    assert package.parent_package == ""
+    assert db.query(Package).count() == 2
+    assert db.query(PackageVulnerability).count() == 1
+    assert db.query(RemediationTask).count() == 1
+
+
 def test_persist_scan_result_keeps_local_and_github_repo_identities_separate():
     db = make_session()
     local_result = deterministic_scan_result()

@@ -68,9 +68,214 @@ def upgrade() -> None:
 
 
 def _deduplicate_existing_identity_rows(bind: Connection) -> None:
+    _deduplicate_repos(bind)
+    _deduplicate_vulnerability_aliases(bind)
+    _deduplicate_advisory_references(bind)
     _deduplicate_packages(bind)
     _deduplicate_package_vulnerabilities(bind)
     _deduplicate_open_remediation_tasks(bind)
+
+
+def _deduplicate_repos(bind: Connection) -> None:
+    bind.execute(
+        sa.text(
+            """
+            with repo_identity_rows as (
+                select
+                    id,
+                    first_value(id) over (
+                        partition by provider, full_name
+                        order by created_at, id
+                    ) as canonical_id
+                from repos
+            )
+            update scans
+            set repo_id = (
+                select canonical_id
+                from repo_identity_rows
+                where repo_identity_rows.id = scans.repo_id
+            )
+            where repo_id in (
+                select id
+                from repo_identity_rows
+                where id != canonical_id
+            )
+            """
+        )
+    )
+    bind.execute(
+        sa.text(
+            """
+            with repo_identity_rows as (
+                select
+                    id,
+                    first_value(id) over (
+                        partition by provider, full_name
+                        order by created_at, id
+                    ) as canonical_id
+                from repos
+            )
+            update packages
+            set repo_id = (
+                select canonical_id
+                from repo_identity_rows
+                where repo_identity_rows.id = packages.repo_id
+            )
+            where repo_id in (
+                select id
+                from repo_identity_rows
+                where id != canonical_id
+            )
+            """
+        )
+    )
+    bind.execute(
+        sa.text(
+            """
+            with repo_identity_rows as (
+                select
+                    id,
+                    first_value(id) over (
+                        partition by provider, full_name
+                        order by created_at, id
+                    ) as canonical_id
+                from repos
+            )
+            update repo_files
+            set repo_id = (
+                select canonical_id
+                from repo_identity_rows
+                where repo_identity_rows.id = repo_files.repo_id
+            )
+            where repo_id in (
+                select id
+                from repo_identity_rows
+                where id != canonical_id
+            )
+            """
+        )
+    )
+    bind.execute(
+        sa.text(
+            """
+            with repo_identity_rows as (
+                select
+                    id,
+                    first_value(id) over (
+                        partition by provider, full_name
+                        order by created_at, id
+                    ) as canonical_id
+                from repos
+            )
+            update embeddings
+            set repo_id = (
+                select canonical_id
+                from repo_identity_rows
+                where repo_identity_rows.id = embeddings.repo_id
+            )
+            where repo_id in (
+                select id
+                from repo_identity_rows
+                where id != canonical_id
+            )
+            """
+        )
+    )
+    bind.execute(
+        sa.text(
+            """
+            with repo_identity_rows as (
+                select
+                    id,
+                    first_value(id) over (
+                        partition by provider, full_name
+                        order by created_at, id
+                    ) as canonical_id
+                from repos
+            )
+            update remediation_tasks
+            set repo_id = (
+                select canonical_id
+                from repo_identity_rows
+                where repo_identity_rows.id = remediation_tasks.repo_id
+            )
+            where repo_id in (
+                select id
+                from repo_identity_rows
+                where id != canonical_id
+            )
+            """
+        )
+    )
+    bind.execute(
+        sa.text(
+            """
+            with repo_identity_rows as (
+                select
+                    id,
+                    first_value(id) over (
+                        partition by provider, full_name
+                        order by created_at, id
+                    ) as canonical_id
+                from repos
+            )
+            delete from repos
+            where id in (
+                select id
+                from repo_identity_rows
+                where id != canonical_id
+            )
+            """
+        )
+    )
+
+
+def _deduplicate_vulnerability_aliases(bind: Connection) -> None:
+    bind.execute(
+        sa.text(
+            """
+            with vulnerability_alias_identity_rows as (
+                select
+                    id,
+                    first_value(id) over (
+                        partition by vulnerability_id, alias
+                        order by created_at, id
+                    ) as canonical_id
+                from vulnerability_aliases
+            )
+            delete from vulnerability_aliases
+            where id in (
+                select id
+                from vulnerability_alias_identity_rows
+                where id != canonical_id
+            )
+            """
+        )
+    )
+
+
+def _deduplicate_advisory_references(bind: Connection) -> None:
+    bind.execute(
+        sa.text(
+            """
+            with advisory_reference_identity_rows as (
+                select
+                    id,
+                    first_value(id) over (
+                        partition by vulnerability_id, url
+                        order by created_at, id
+                    ) as canonical_id
+                from advisory_references
+            )
+            delete from advisory_references
+            where id in (
+                select id
+                from advisory_reference_identity_rows
+                where id != canonical_id
+            )
+            """
+        )
+    )
 
 
 def _deduplicate_packages(bind: Connection) -> None:

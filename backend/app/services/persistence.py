@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional, TypeVar
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -291,6 +292,9 @@ def get_or_create_package(
     repo: Repo,
     package: ParsedDependency,
 ) -> PackageModel:
+    current_version = package.current_version or ""
+    parent_package = package.parent_package or ""
+
     def query_package() -> PackageModel | None:
         return (
             db.query(PackageModel)
@@ -298,8 +302,8 @@ def get_or_create_package(
                 PackageModel.repo_id == repo.id,
                 PackageModel.name == package.name,
                 PackageModel.ecosystem == package.ecosystem,
-                PackageModel.current_version == package.current_version,
-                PackageModel.parent_package == package.parent_package,
+                func.coalesce(PackageModel.current_version, "") == current_version,
+                func.coalesce(PackageModel.parent_package, "") == parent_package,
             )
             .order_by(PackageModel.id)
             .first()
