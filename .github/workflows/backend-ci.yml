@@ -36,6 +36,9 @@ jobs:
       - name: Run retrieval eval harness
         run: python -m app.eval.run_retrieval_eval
 
+      - name: Run AI summary eval harness
+        run: python -m app.eval.run_ai_summary_eval
+
       - name: Generate deterministic demo report
         run: python -m app.eval.generate_demo_report --output "$DEMO_REPORT_PATH"
         env:
