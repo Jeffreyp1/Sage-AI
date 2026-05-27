@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from app.config import get_settings
 from app.services.dependency_parser import ParsedDependency, parse_dependencies
+from app.services.osv_cache import CachedOsvClient, OsvLikeClient
 from app.services.osv_client import OsvClient, OsvClientError
 from app.services.patch_planner import PatchPlan, build_patch_plan
 from app.services.public_safety import sanitize_public_value, sanitize_text
@@ -73,11 +74,17 @@ class ScanResult:
 
 
 class ScanService:
-    def __init__(self, osv_client: Optional[OsvClient] = None) -> None:
+    def __init__(self, osv_client: Optional[OsvLikeClient] = None) -> None:
         settings = get_settings()
-        self.osv_client = osv_client or OsvClient(
-            api_url=settings.osv_api_url,
-            timeout_seconds=settings.osv_timeout_seconds,
+        if osv_client is not None:
+            self.osv_client = osv_client
+            return
+
+        self.osv_client = CachedOsvClient(
+            OsvClient(
+                api_url=settings.osv_api_url,
+                timeout_seconds=settings.osv_timeout_seconds,
+            )
         )
 
     def scan_local(self, repo_path: str) -> ScanResult:
