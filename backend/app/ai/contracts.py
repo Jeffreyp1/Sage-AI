@@ -272,7 +272,11 @@ def validate_finding_summary_response(
     mutated_fields: List[str] = []
 
     evidence_ids = {item.id for item in request.evidence}
-    claim_ids = {claim.claim_id for claim in response.claim_checks}
+    claim_checks, claim_check_errors = valid_claim_checks(response.claim_checks)
+    citations, citation_errors = valid_citations(response.citations)
+    errors.extend(claim_check_errors)
+    errors.extend(citation_errors)
+    claim_ids = {claim.claim_id for claim in claim_checks}
     allowed_dispositions = set(request.safety_constraints.required_claim_dispositions)
 
     if response.finding_id != request.finding_id:
@@ -305,21 +309,25 @@ def validate_finding_summary_response(
             % (request.risk_score, response.risk_score)
         )
 
-    for citation in response.citations:
+    for citation in citations:
         if citation.evidence_id not in evidence_ids:
             invalid_citation_ids.append(citation.evidence_id)
             errors.append("Citation references unknown evidence id %s." % citation.evidence_id)
         if citation.claim_id not in claim_ids:
             errors.append("Citation references unknown claim id %s." % citation.claim_id)
 
-    for claim in response.claim_checks:
+    for claim in claim_checks:
         if claim.disposition not in allowed_dispositions:
             errors.append(
                 "Claim %s uses disallowed disposition %s."
                 % (claim.claim_id, claim.disposition)
             )
 
-        invalid_evidence = sorted(set(claim.evidence_ids) - evidence_ids)
+        claim_evidence_ids = valid_claim_evidence_ids(claim, errors)
+        if claim_evidence_ids is None:
+            continue
+
+        invalid_evidence = sorted(set(claim_evidence_ids) - evidence_ids)
         for evidence_id in invalid_evidence:
             invalid_citation_ids.append(evidence_id)
             errors.append(
@@ -331,7 +339,7 @@ def validate_finding_summary_response(
             errors.append("Claim %s is unsupported." % claim.claim_id)
             continue
 
-        if claim.disposition in {"fact", "inference"} and len(claim.evidence_ids) == 0:
+        if claim.disposition in {"fact", "inference"} and len(claim_evidence_ids) == 0:
             unsupported_claim_ids.append(claim.claim_id)
             errors.append("Claim %s has no supporting evidence." % claim.claim_id)
 
@@ -357,6 +365,51 @@ def validate_finding_summary_response(
         unsupported_claim_ids=deduped_unsupported_claim_ids,
         mutated_fields=mutated_fields,
     )
+
+
+def valid_claim_checks(value: object) -> Tuple[List[ClaimCheck], List[str]]:
+    if not isinstance(value, list | tuple):
+        return [], ["AI response claim_checks must be a list."]
+
+    claim_checks: List[ClaimCheck] = []
+    errors: List[str] = []
+    for index, claim in enumerate(value):
+        if isinstance(claim, ClaimCheck):
+            claim_checks.append(claim)
+            continue
+        errors.append("AI response claim_checks[%s] must be a ClaimCheck." % index)
+    return claim_checks, errors
+
+
+def valid_citations(value: object) -> Tuple[List[Citation], List[str]]:
+    if not isinstance(value, list | tuple):
+        return [], ["AI response citations must be a list."]
+
+    citations: List[Citation] = []
+    errors: List[str] = []
+    for index, citation in enumerate(value):
+        if isinstance(citation, Citation):
+            citations.append(citation)
+            continue
+        errors.append("AI response citations[%s] must be a Citation." % index)
+    return citations, errors
+
+
+def valid_claim_evidence_ids(
+    claim: ClaimCheck,
+    errors: List[str],
+) -> Optional[List[str]]:
+    if not isinstance(claim.evidence_ids, list | tuple | set):
+        errors.append("Claim %s evidence_ids must be a list." % claim.claim_id)
+        return None
+
+    evidence_ids: List[str] = []
+    for index, evidence_id in enumerate(claim.evidence_ids):
+        if isinstance(evidence_id, str):
+            evidence_ids.append(evidence_id)
+            continue
+        errors.append("Claim %s evidence_ids[%s] must be a string." % (claim.claim_id, index))
+    return evidence_ids
 
 
 def first_evidence_id(request: AIFindingSummaryRequest) -> Optional[str]:

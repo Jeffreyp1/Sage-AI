@@ -50,7 +50,8 @@ COOKIE_SECRET_PAIR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 INLINE_SECRET_ASSIGNMENT_PATTERN = re.compile(
-    r"(?P<prefix>\b(?:password|api[_-]?key|session[_-]?secret|%s)\b\s*[:=]\s*)"
+    r"(?P<prefix>\b(?:password|api[_-]?key|session[_-]?id|sid|"
+    r"session[_-]?secret|%s)\b\s*[:=]\s*)"
     % TOKEN_KEY_PATTERN
     + r"(?P<secret>[^\s,;&]+)",
     re.IGNORECASE,

@@ -71,6 +71,24 @@ def test_redacts_inline_token_key_variants_under_safe_keys():
     }
 
 
+def test_redacts_inline_session_id_variants_under_safe_keys():
+    value = {
+        "message": (
+            "callback session_id=session-value sessionid=compact-value "
+            "sid=short-value"
+        )
+    }
+
+    redacted = redact_trace_value(value)
+
+    assert redacted == {
+        "message": (
+            f"callback session_id={REDACTED} sessionid={REDACTED} "
+            f"sid={REDACTED}"
+        )
+    }
+
+
 def test_redacts_secret_cookie_pairs_anywhere_in_cookie_header():
     value = {
         "headers_dump": (

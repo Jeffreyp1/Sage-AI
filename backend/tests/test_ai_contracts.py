@@ -80,6 +80,85 @@ class AIContractsTest(unittest.TestCase):
         self.assertTrue(result.blocked)
         self.assertEqual(result.invalid_citation_ids, ["missing-evidence"])
 
+    def test_validation_blocks_missing_citations(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(response, citations=None)  # type: ignore[arg-type]
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertIn("AI response citations must be a list.", result.errors)
+
+    def test_validation_blocks_malformed_citations(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            citations=[
+                {
+                    "evidence_id": "ev-advisory",
+                    "claim_id": "claim-fact-1",
+                }
+            ],
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertIn("AI response citations[0] must be a Citation.", result.errors)
+
+    def test_validation_blocks_missing_claim_checks(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(response, claim_checks=None)  # type: ignore[arg-type]
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertIn("AI response claim_checks must be a list.", result.errors)
+
+    def test_validation_blocks_malformed_claim_checks(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            claim_checks=[
+                {
+                    "claim_id": "claim-fact-1",
+                    "disposition": "fact",
+                    "evidence_ids": ["ev-advisory"],
+                }
+            ],
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertIn("AI response claim_checks[0] must be a ClaimCheck.", result.errors)
+
+    def test_validation_blocks_claims_with_malformed_evidence_ids(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            claim_checks=[
+                replace(response.claim_checks[0], evidence_ids=None),  # type: ignore[arg-type]
+                replace(response.claim_checks[1], evidence_ids=42),  # type: ignore[arg-type]
+            ],
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertIn("Claim claim-fact-1 evidence_ids must be a list.", result.errors)
+        self.assertIn("Claim claim-inference-1 evidence_ids must be a list.", result.errors)
+
     def test_validation_flags_unsupported_claims(self):
         request = finding_request()
         response = MockAIProvider(
