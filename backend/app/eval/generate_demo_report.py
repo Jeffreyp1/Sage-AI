@@ -80,7 +80,37 @@ def canonicalize_demo_report(report: dict[str, object]) -> dict[str, object]:
             if isinstance(task, dict):
                 task["task_id"] = "task_wave1_demo_%02d" % index
 
+    canonicalize_public_path_fields(report)
     return report
+
+
+def canonicalize_public_path_fields(value: object) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and key.endswith("_path") and isinstance(item, str):
+                value[key] = canonicalize_public_path(item)
+                continue
+            canonicalize_public_path_fields(item)
+        return
+
+    if isinstance(value, list):
+        for item in value:
+            canonicalize_public_path_fields(item)
+
+
+def canonicalize_public_path(value: str) -> str:
+    path = Path(value)
+    if not path.is_absolute():
+        return value
+
+    resolved_path = path.resolve(strict=False)
+    try:
+        return resolved_path.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        stable_name = resolved_path.name
+        if stable_name != "":
+            return stable_name
+        return path.name or value
 
 
 if __name__ == "__main__":

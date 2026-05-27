@@ -1,9 +1,10 @@
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-from app.eval.generate_demo_report import DEFAULT_REPO_PATH, generate_report, main
+from app.eval.generate_demo_report import DEFAULT_REPO_PATH, PROJECT_ROOT, generate_report, main
 from app.eval.report_validator import validate_report
 
 
@@ -43,6 +44,31 @@ class DemoReportTest(unittest.TestCase):
 
             report = json.loads(first)
             self.assertTrue(validate_report(report)["passed"])
+
+    def test_generated_report_json_does_not_leak_absolute_paths(self):
+        default_report = generate_report(DEFAULT_REPO_PATH)
+        self.assertTrue(validate_report(default_report)["passed"])
+        default_json = json.dumps(default_report, sort_keys=True)
+
+        for forbidden in ("/Users/", "/private/", str(PROJECT_ROOT)):
+            self.assertNotIn(forbidden, default_json)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            temp_repo_path = temp_root / "payments-api"
+            shutil.copytree(DEFAULT_REPO_PATH, temp_repo_path)
+
+            temp_report = generate_report(temp_repo_path)
+            self.assertTrue(validate_report(temp_report)["passed"])
+            temp_json = json.dumps(temp_report, sort_keys=True)
+
+            for forbidden in (
+                "/Users/",
+                "/private/",
+                str(temp_root),
+                str(temp_root.resolve()),
+            ):
+                self.assertNotIn(forbidden, temp_json)
 
 
 if __name__ == "__main__":
