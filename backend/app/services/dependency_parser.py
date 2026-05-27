@@ -56,11 +56,13 @@ class NodeDependencyParser:
 
         if not package_json_path.exists():
             return []
+        self._ensure_dependency_file_inside_repo(package_json_path, root)
 
         package_json = self._read_json(package_json_path)
         direct_deps = self._direct_dependencies(package_json)
 
         if package_lock_path.exists():
+            self._ensure_dependency_file_inside_repo(package_lock_path, root)
             lock = self._read_json(package_lock_path)
             dependencies = self._parse_lockfile(
                 package_lock_path=package_lock_path,
@@ -292,11 +294,29 @@ class NodeDependencyParser:
         try:
             with path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
+        except UnicodeDecodeError as exc:
+            raise DependencyParserError("Unable to read dependency file") from exc
+        except OSError as exc:
+            raise DependencyParserError("Unable to read dependency file") from exc
         except json.JSONDecodeError as exc:
-            raise DependencyParserError("Invalid JSON in %s: %s" % (path, exc)) from exc
+            raise DependencyParserError(
+                "Invalid JSON in dependency file: %s" % exc.msg
+            ) from exc
         if not isinstance(data, dict):
-            raise DependencyParserError("%s must contain a JSON object" % path)
+            raise DependencyParserError("Dependency file must contain a JSON object")
         return data
+
+    def _ensure_dependency_file_inside_repo(self, path: Path, root: Path) -> None:
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as exc:
+            raise DependencyParserError("Unable to read dependency file") from exc
+        if not resolved.is_file():
+            raise DependencyParserError("Dependency path is not a file")
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise DependencyParserError("Dependency file is outside the repository") from exc
 
     def _dependency_key(self, dep: ParsedDependency) -> Tuple[str, Optional[str], Optional[str]]:
         return (dep.name, dep.current_version, dep.parent_package)

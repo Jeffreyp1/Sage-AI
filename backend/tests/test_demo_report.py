@@ -66,8 +66,8 @@ class DemoReportTest(unittest.TestCase):
 
             self.assertEqual(exit_code, 1)
             self.assertEqual(stdout.getvalue(), "")
-            self.assertIn("Error: unable to write demo report:", stderr.getvalue())
-            self.assertIn(str(output_path), stderr.getvalue())
+            self.assertIn("Error: unable to write demo report", stderr.getvalue())
+            self.assertNotIn(str(output_path), stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_generated_report_json_does_not_leak_absolute_paths(self):
@@ -145,7 +145,8 @@ class DemoReportTest(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), "")
             self.assertFalse(output_path.exists())
             self.assertIn("Error: fixture file not found:", stderr.getvalue())
-            self.assertIn(str(missing_fixture_path), stderr.getvalue())
+            self.assertIn("missing.json", stderr.getvalue())
+            self.assertNotIn(str(root), stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_main_returns_error_for_fixture_path_directory(self):
@@ -171,7 +172,8 @@ class DemoReportTest(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), "")
             self.assertFalse(output_path.exists())
             self.assertIn("Error: fixture file could not be read:", stderr.getvalue())
-            self.assertIn(str(fixture_path), stderr.getvalue())
+            self.assertIn("fixtures", stderr.getvalue())
+            self.assertNotIn(str(root), stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_main_returns_error_for_unreadable_fixture_os_error(self):
@@ -201,8 +203,9 @@ class DemoReportTest(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), "")
             self.assertFalse(output_path.exists())
             self.assertIn("Error: fixture file could not be read:", stderr.getvalue())
-            self.assertIn(str(fixture_path), stderr.getvalue())
-            self.assertIn("permission denied", stderr.getvalue())
+            self.assertIn("fixtures.json", stderr.getvalue())
+            self.assertNotIn(str(root), stderr.getvalue())
+            self.assertNotIn("permission denied", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_main_returns_error_for_invalid_fixture_json(self):
@@ -228,7 +231,8 @@ class DemoReportTest(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), "")
             self.assertFalse(output_path.exists())
             self.assertIn("Error: invalid fixture JSON:", stderr.getvalue())
-            self.assertIn(str(fixture_path), stderr.getvalue())
+            self.assertIn("fixtures.json", stderr.getvalue())
+            self.assertNotIn(str(root), stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
 
 

@@ -283,6 +283,52 @@ def test_serialized_task_sanitizes_public_string_scalars():
     assert "[redacted]" in result["recommended_action"]
 
 
+def test_serialized_task_sanitizes_secret_like_public_scalars():
+    db = make_session()
+    task_id = create_remediation_task(db)
+    task = db.query(RemediationTask).filter(RemediationTask.id == task_id).one()
+    package = task.package_vulnerability.package
+    vulnerability = task.package_vulnerability.vulnerability
+    package.name = "private-token-package"
+    vulnerability.canonical_id = "GHSA-secret-token"
+    task.owner = "private-token-owner"
+    task.recommended_action = "private-token-action"
+    db.commit()
+
+    result = RemediationWorkflowService().get_task(db, task_id)
+    result_text = repr(result)
+
+    assert "private-token-package" not in result_text
+    assert "GHSA-secret-token" not in result_text
+    assert "private-token-owner" not in result_text
+    assert "private-token-action" not in result_text
+    assert result["package"]["name"] == "[redacted-secret]"
+    assert result["vulnerability"]["canonical_id"] == "[redacted-secret]"
+    assert result["owner"] == "[redacted-secret]"
+    assert result["recommended_action"] == "[redacted-secret]"
+
+
+def test_persistence_log_extras_sanitize_secret_like_task_id(monkeypatch):
+    db = make_session()
+    logged = {}
+
+    def fail_query(*_args, **_kwargs):
+        raise SQLAlchemyError("lookup failure with malicious payload details")
+
+    def record_error(message, *, extra):
+        logged["message"] = message
+        logged["extra"] = extra
+
+    monkeypatch.setattr(db, "query", fail_query)
+    monkeypatch.setattr(remediation_workflow.logger, "error", record_error)
+
+    with pytest.raises(WorkflowPersistenceError):
+        RemediationWorkflowService().get_task(db, "GHSA-secret-token")
+
+    assert logged["extra"]["task_id"] == "[redacted-secret]"
+    assert "GHSA-secret-token" not in repr(logged)
+
+
 def test_non_open_task_error_sanitizes_persisted_status():
     db = make_session()
     task_id = create_remediation_task(db)

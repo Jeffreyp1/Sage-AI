@@ -67,7 +67,7 @@ def _persist_scan_result(
     identity = repo_identity or local_repo_identity(result)
     organization = get_or_create_organization(db, identity.organization_name)
     repo = get_or_create_repo(db, organization, result, identity)
-    repo_root = remote_safe_repo_root(result, identity)
+    repo_root = storage_safe_repo_root(result)
     scan = Scan(
         repo_id=repo.id,
         status="completed",
@@ -134,7 +134,7 @@ def local_repo_identity(result: ScanResult) -> RepoPersistenceIdentity:
         provider="local",
         name=result.repo_profile.repo_name,
         full_name="local/%s" % result.repo_profile.repo_name,
-        remote_url=result.repo_profile.root_path,
+        remote_url=None,
         organization_name="local",
     )
 
@@ -203,12 +203,7 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def remote_safe_repo_root(
-    result: ScanResult,
-    identity: RepoPersistenceIdentity,
-) -> Path | None:
-    if identity.provider != "github":
-        return None
+def storage_safe_repo_root(result: ScanResult) -> Path | None:
     if not result.repo_profile.root_path:
         return None
     return Path(result.repo_profile.root_path).resolve()

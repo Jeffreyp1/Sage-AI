@@ -107,6 +107,38 @@ class ReachabilityTest(unittest.TestCase):
                     "expected source evidence for %s" % source_path,
                 )
 
+    def test_symlinked_source_escape_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            outside = Path(tmp) / "outside"
+            (root / "src").mkdir(parents=True)
+            outside.mkdir()
+            outside_source = outside / "linked.ts"
+            outside_source.write_text('import runtimeLib from "runtime-lib";\n', encoding="utf-8")
+            (root / "src" / "linked.ts").symlink_to(outside_source)
+
+            result = analyze_reachability(str(root), make_dependency("runtime-lib"))
+
+        self.assertEqual(result.reachability, "unknown")
+        self.assertFalse(
+            any(evidence.get("source") == "src/linked.ts" for evidence in result.evidence)
+        )
+
+    def test_symlinked_dockerfile_escape_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            outside = Path(tmp) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            outside_dockerfile = outside / "Dockerfile"
+            outside_dockerfile.write_text("RUN npm install runtime-lib\n", encoding="utf-8")
+            (root / "Dockerfile").symlink_to(outside_dockerfile)
+
+            result = analyze_reachability(str(root), make_dependency("runtime-lib"))
+
+        self.assertEqual(result.reachability, "unknown")
+        self.assertFalse(any(evidence["type"] == "dockerfile" for evidence in result.evidence))
+
     def test_production_source_classifier_keeps_test_and_generated_paths_out(self):
         production_paths = [
             "server.js",

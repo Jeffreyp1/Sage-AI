@@ -80,6 +80,63 @@ class AIContractsTest(unittest.TestCase):
         self.assertTrue(result.blocked)
         self.assertEqual(result.invalid_citation_ids, ["missing-evidence"])
 
+    def test_validation_blocks_fact_claim_without_matching_citation(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            citations=[],
+            claim_checks=[
+                ClaimCheck(
+                    claim_id="claim-fact-1",
+                    claim="archive-utils is affected.",
+                    disposition="fact",
+                    evidence_ids=["ev-advisory"],
+                )
+            ],
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.unsupported_claim_ids, ["claim-fact-1"])
+        self.assertIn(
+            "Claim claim-fact-1 evidence id ev-advisory has no matching citation.",
+            result.errors,
+        )
+
+    def test_validation_blocks_inference_claim_with_mismatched_citation(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            citations=[
+                Citation(
+                    evidence_id="ev-reachability",
+                    claim_id="claim-inference-1",
+                )
+            ],
+            claim_checks=[
+                ClaimCheck(
+                    claim_id="claim-inference-1",
+                    claim="The production upload route raises priority.",
+                    disposition="inference",
+                    evidence_ids=["ev-advisory"],
+                )
+            ],
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.unsupported_claim_ids, ["claim-inference-1"])
+        self.assertIn(
+            "Claim claim-inference-1 evidence id ev-advisory has no matching citation.",
+            result.errors,
+        )
+
     def test_validation_blocks_non_string_citation_identifiers_without_crashing(self):
         request = finding_request()
         response = MockAIProvider().summarize_finding(request)

@@ -231,7 +231,6 @@ def summarize_results(results: Sequence[Mapping[str, object]]) -> dict[str, obje
         and not isinstance(result.get("citation_precision"), bool)
     ]
     unsupported_claim_counts = numeric_values(results, "unsupported_claim_count")
-    mutated_field_counts = numeric_values(results, "mutated_field_count")
     mutation_cases = [
         result
         for result in results

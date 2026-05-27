@@ -6,11 +6,17 @@ from typing import Dict, List, Optional, Set
 from uuid import uuid4
 
 from app.config import get_settings
+from app.schemas.report import REPORT_SCHEMA_VERSION
 from app.services.dependency_parser import ParsedDependency, parse_dependencies
 from app.services.osv_cache import CachedOsvClient, OsvLikeClient
 from app.services.osv_client import OsvClient, OsvClientError
 from app.services.patch_planner import PatchPlan, build_patch_plan
-from app.services.public_safety import sanitize_public_value, sanitize_text
+from app.services.path_policy import resolve_repo_path
+from app.services.public_safety import (
+    sanitize_public_identifier,
+    sanitize_public_value,
+    sanitize_text,
+)
 from app.services.reachability import ReachabilityResult, analyze_reachability
 from app.services.repo_ingestion import RepoProfile, profile_repo
 from app.services.risk_scoring import RiskInput, RiskResult, score_risk
@@ -58,19 +64,116 @@ class ScanResult:
     errors: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, object]:
+        repo_root = Path(self.repo_profile.root_path).resolve(strict=False)
         return sanitize_public_value(
             {
+                "schema_version": REPORT_SCHEMA_VERSION,
                 "scan_id": self.scan_id,
-                "repo_profile": self.repo_profile.to_dict(),
-                "packages": [package.to_dict() for package in self.packages],
+                "repo_profile": public_repo_profile(self.repo_profile),
+                "packages": [
+                    public_dependency_record(package, repo_root=repo_root)
+                    for package in self.packages
+                ],
                 "vulnerabilities": [
                     vulnerability.to_public_dict() for vulnerability in self.vulnerabilities
                 ],
                 "remediation_tasks": [task.to_dict() for task in self.remediation_tasks],
                 "summary": self.summary,
-                "errors": self.errors,
+                "errors": public_scan_errors(self.errors),
             }
         )
+
+
+def public_repo_profile(profile: RepoProfile) -> Dict[str, object]:
+    data = profile.to_dict()
+    root_path = data.get("root_path")
+    if isinstance(root_path, str):
+        data["root_path"] = Path(root_path).name
+    return data
+
+
+def public_dependency_record(
+    dependency: ParsedDependency,
+    *,
+    repo_root: Path,
+) -> Dict[str, object]:
+    data = dependency.to_dict()
+    data = scrub_dependency_identifier(data, dependency.name)
+    for field_name in ("manifest_path", "lockfile_path"):
+        value = data.get(field_name)
+        if isinstance(value, str):
+            data[field_name] = public_repo_file_path(value, repo_root=repo_root)
+    return data
+
+
+def scrub_dependency_identifier(data: Dict[str, object], package_name: str) -> Dict[str, object]:
+    safe_name = sanitize_public_identifier(package_name)
+    if safe_name == package_name:
+        return data
+    scrubbed = replace_identifier_in_value(data, package_name, safe_name)
+    if isinstance(scrubbed, dict):
+        return scrubbed
+    return data
+
+
+def replace_identifier_in_value(value: object, unsafe: str, safe: str) -> object:
+    if isinstance(value, str):
+        return value.replace(unsafe, safe)
+    if isinstance(value, list):
+        return [replace_identifier_in_value(item, unsafe, safe) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: replace_identifier_in_value(child, unsafe, safe)
+            for key, child in value.items()
+        }
+    return value
+
+
+def public_repo_file_path(value: str, *, repo_root: Path) -> str:
+    path = Path(value)
+    if not path.is_absolute():
+        return path.as_posix()
+
+    resolved = path.resolve(strict=False)
+    try:
+        return resolved.relative_to(repo_root).as_posix()
+    except ValueError:
+        return resolved.name
+
+
+def public_scan_errors(errors: List[str]) -> List[str]:
+    return [public_scan_error(error) for error in errors]
+
+
+def public_scan_error(error: str) -> str:
+    skipped_prefix = "Skipped OSV query for "
+    skipped_suffix = " because exact installed version was unavailable."
+    if error.startswith(skipped_prefix) and error.endswith(skipped_suffix):
+        target = error.removeprefix(skipped_prefix).removesuffix(skipped_suffix).strip()
+        safe_target = sanitize_public_identifier(target)
+        return (
+            "Skipped OSV query for %s because exact installed version was unavailable."
+            % safe_target
+        )
+
+    osv_prefix = "OSV query failed for "
+    if not error.startswith(osv_prefix):
+        return sanitize_text(error)
+    target = error.removeprefix(osv_prefix).partition(":")[0].strip()
+    if not target:
+        return "OSV query failed; vulnerability data may be incomplete."
+    safe_target = sanitize_osv_target(target)
+    return "OSV query failed for %s; vulnerability data may be incomplete." % safe_target
+
+
+def sanitize_osv_target(target: str) -> str:
+    package_name, separator, version = target.rpartition("@")
+    if separator == "" or package_name == "":
+        return sanitize_public_identifier(target)
+    return "%s@%s" % (
+        sanitize_public_identifier(package_name),
+        sanitize_text(version),
+    )
 
 
 class ScanService:
@@ -87,10 +190,18 @@ class ScanService:
             )
         )
 
-    def scan_local(self, repo_path: str) -> ScanResult:
-        root = Path(repo_path).resolve()
+    def scan_local(
+        self,
+        repo_path: str,
+        *,
+        workspace_root: str | Path | None = None,
+    ) -> ScanResult:
+        root = resolve_repo_path(
+            repo_path,
+            workspace_root=workspace_root if workspace_root is not None else Path.cwd(),
+        )
         if not root.exists() or not root.is_dir():
-            raise ValueError("Repository path does not exist or is not a directory: %s" % repo_path)
+            raise ValueError("Repository path does not exist or is not a directory")
 
         profile = profile_repo(str(root))
         packages = parse_dependencies(str(root))

@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from copy import deepcopy
 from pathlib import Path
 
-from app.eval.report_validator import main, validate_report
+from app.eval.report_validator import main, validate_json_file, validate_report
 
 
 def clean_task():
@@ -36,12 +36,20 @@ def clean_task():
             "runtime_scope": "production",
             "reachability": "possibly_reachable",
             "confidence": 0.8,
-            "factors": ["production runtime path"],
+            "factors": {"production_runtime_path": 1.0},
             "rationale": ["Package is imported by the upload route."],
         },
         "evidence": [
-            {"type": "lockfile", "source": "package-lock.json"},
-            {"type": "source_file", "source": "src/upload/receiptParser.ts"},
+            {
+                "type": "lockfile",
+                "source": "package-lock.json",
+                "claim": "archive-utils@2.1.4 is installed",
+            },
+            {
+                "type": "source_file",
+                "source": "src/upload/receiptParser.ts",
+                "claim": "archive-utils is imported by receipt parser",
+            },
         ],
         "patch_plan": {
             "recommended_action": "upgrade",
@@ -56,10 +64,23 @@ def clean_task():
 
 def clean_report():
     return {
+        "schema_version": "v1",
         "scan_id": "scan_123",
         "repo_profile": {"repo_name": "payments-api"},
         "remediation_tasks": [clean_task()],
-        "summary": {"deduped_remediation_tasks": 1},
+        "summary": {
+            "complete": True,
+            "scan_status": "complete",
+            "packages": 1,
+            "raw_alerts": 1,
+            "deduped_remediation_tasks": 1,
+            "release_blockers": 1,
+            "recommended_sprint_fixes": 0,
+            "safe_to_defer": 0,
+            "needs_human_review": 0,
+            "error_count": 0,
+            "priority_counts": {"P0_RELEASE_BLOCKER": 1},
+        },
         "errors": [],
     }
 
@@ -85,6 +106,47 @@ class ReportValidatorTest(unittest.TestCase):
         result = validate_report(clean_report())
 
         self.assertTrue(result["passed"])
+        self.assertEqual(result["finding_count"], 0)
+
+    def test_allows_legitimate_payload_and_cookie_package_names(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["package"]["name"] = "payload-parser"
+        report["packages"] = [
+            {
+                "name": "cookie",
+                "current_version": "1.0.0",
+                "ecosystem": "npm",
+                "dependency_type": "dependencies",
+                "is_direct": True,
+            }
+        ]
+
+        result = validate_report(report)
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["finding_count"], 0)
+
+    def test_detects_scoped_private_package_in_freeform_text(self):
+        report = clean_report()
+        report["remediation_tasks"][0]["evidence"][0][
+            "claim"
+        ] = "Upgrade @private/token before release."
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("unsafe_public_text", finding_codes(result))
+
+    def test_allows_safe_scoped_package_in_freeform_text(self):
+        report = clean_report()
+        report["remediation_tasks"][0]["evidence"][0][
+            "claim"
+        ] = "Review @safe/payload-parser before release."
+
+        result = validate_report(report)
+
+        self.assertTrue(result["passed"], json.dumps(result, sort_keys=True))
         self.assertEqual(result["finding_count"], 0)
 
     def test_detects_duplicate_task_identity(self):
@@ -259,6 +321,100 @@ class ReportValidatorTest(unittest.TestCase):
         self.assertIn("unsafe_public_text", codes)
         self.assertIn("forbidden_public_key", codes)
 
+    def test_detects_local_path_and_secret_like_public_text(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["evidence"].append(
+            {
+                "type": "debug",
+                "source": "/Users/auditor/private/repo/package-lock.json",
+                "claim": "OSV token=ghp_secret123 was present in diagnostics.",
+            }
+        )
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("unsafe_public_text", finding_codes(result))
+
+    def test_detects_local_path_variants_in_references_without_echoing_values(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        local_values = [
+            "file:///Users/auditor/private/repo/package-lock.json",
+            "https://scanner.local/report?path=/repos/private/payments/package.json",
+            "C:/Users/auditor/private/repo/package-lock.json",
+        ]
+        for value in local_values:
+            task["evidence"].append(
+                {
+                    "type": "reference",
+                    "source": value,
+                    "claim": "Reference was attached during validation.",
+                }
+            )
+
+        result = validate_report(report)
+
+        text = json.dumps(result)
+        self.assertFalse(result["passed"])
+        self.assertIn("unsafe_public_text", finding_codes(result))
+        for value in local_values:
+            self.assertNotIn(value, text)
+
+    def test_detects_unsafe_public_text_in_mapping_keys_without_echoing_key(self):
+        report = clean_report()
+        report["private-token-key"] = "safe value"
+
+        result = validate_report(report)
+
+        text = json.dumps(result)
+        self.assertFalse(result["passed"])
+        self.assertIn("unsafe_public_text", finding_codes(result))
+        self.assertNotIn("private-token-key", text)
+
+    def test_forbidden_key_path_does_not_echo_unsafe_parent_key(self):
+        report = clean_report()
+        report["private-token-key"] = {"raw": "internal value"}
+
+        result = validate_report(report)
+
+        text = json.dumps(result)
+        self.assertFalse(result["passed"])
+        self.assertIn("forbidden_public_key", finding_codes(result))
+        self.assertNotIn("private-token-key", text)
+        self.assertIn("<key>.raw", text)
+
+    def test_detects_common_api_key_values(self):
+        report = clean_report()
+        report["errors"] = ["provider returned sk_live_51SecretValue"]
+
+        result = validate_report(report)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("unsafe_public_text", finding_codes(result))
+
+    def test_validate_report_rejects_schema_invalid_direct_input(self):
+        result = validate_report({"remediation_tasks": []})
+
+        self.assertFalse(result["passed"])
+        self.assertIn("invalid_report_schema", finding_codes(result))
+
+    def test_allows_already_redacted_secret_fragments(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["evidence"].append(
+            {
+                "type": "debug",
+                "source": "debug-header",
+                "claim": "Authorization: Bearer [redacted-secret]",
+            }
+        )
+
+        result = validate_report(report)
+
+        self.assertTrue(result["passed"])
+
     def test_detects_nested_unsafe_and_unsupported_text_outside_summary(self):
         report = clean_report()
         task = report["remediation_tasks"][0]
@@ -365,6 +521,30 @@ class ReportValidatorTest(unittest.TestCase):
         self.assertIn("missing_priority", codes)
         self.assertIn("unsupported_claim_marker", codes)
 
+    def test_finding_messages_do_not_echo_raw_report_values(self):
+        report = clean_report()
+        task = report["remediation_tasks"][0]
+        task["package"]["name"] = "private-token-package"
+        task["package"]["current_version"] = "secret-version"
+        task["vulnerability"]["canonical_id"] = "CVE-secret-token"
+        task["vulnerability"]["summary"] = "malicious payload details"
+        task["patch_plan"]["target_version"] = "token-secret-version"
+        report["remediation_tasks"].append(deepcopy(task))
+
+        result = validate_report(report)
+
+        messages = " ".join(finding["message"] for finding in result["findings"])
+        codes = finding_codes(result)
+        self.assertFalse(result["passed"])
+        self.assertIn("duplicate_task", codes)
+        self.assertIn("invalid_patch_target_version", codes)
+        self.assertIn("unsafe_public_text", codes)
+        self.assertNotIn("private-token-package", messages)
+        self.assertNotIn("secret-version", messages)
+        self.assertNotIn("CVE-secret-token", messages)
+        self.assertNotIn("token-secret-version", messages)
+        self.assertNotIn("malicious payload", messages)
+
     def test_allows_negated_remote_exploitable_claim_but_blocks_positive_claim(self):
         report = clean_report()
         report["remediation_tasks"][0]["risk"]["rationale"] = [
@@ -400,6 +580,73 @@ class ReportValidatorTest(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertFalse(payload["passed"])
         self.assertIn("missing_evidence", finding_codes(payload))
+
+    def test_validate_json_file_does_not_leak_local_path_for_missing_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "missing-report.json"
+
+            result = validate_json_file(path)
+
+        text = json.dumps(result)
+        self.assertFalse(result["passed"])
+        self.assertIn("read_error", finding_codes(result))
+        self.assertNotIn(temp_dir, text)
+        self.assertNotIn(str(path), text)
+        self.assertIn("missing-report.json", text)
+
+    def test_validate_json_file_does_not_leak_local_path_for_invalid_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bad-report.json"
+            path.write_text("{", encoding="utf-8")
+
+            result = validate_json_file(path)
+
+        text = json.dumps(result)
+        self.assertFalse(result["passed"])
+        self.assertIn("invalid_json", finding_codes(result))
+        self.assertNotIn(temp_dir, text)
+        self.assertNotIn(str(path), text)
+        self.assertIn("bad-report.json", text)
+
+    def test_validate_json_file_does_not_leak_secret_like_filename(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "private-token-report.json"
+            path.write_text("{", encoding="utf-8")
+
+            result = validate_json_file(path)
+
+        text = json.dumps(result)
+        self.assertFalse(result["passed"])
+        self.assertIn("invalid_json", finding_codes(result))
+        self.assertNotIn("private-token-report.json", text)
+        self.assertNotIn("private-token", text)
+        self.assertIn("report file", text)
+
+    def test_validate_json_file_rejects_schema_invalid_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "report.json"
+            report = clean_report()
+            report.pop("schema_version", None)
+            path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = validate_json_file(path)
+
+        self.assertFalse(result["passed"])
+        self.assertIn("invalid_report_schema", finding_codes(result))
+
+    def test_validate_json_file_does_not_leak_local_path_for_non_utf8_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "binary-report.json"
+            path.write_bytes(b"\xff\xfe\x00")
+
+            result = validate_json_file(path)
+
+        text = json.dumps(result)
+        self.assertFalse(result["passed"])
+        self.assertIn("read_error", finding_codes(result))
+        self.assertNotIn(temp_dir, text)
+        self.assertNotIn(str(path), text)
+        self.assertIn("binary-report.json", text)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import tempfile
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.config import get_local_scan_workspace_root, get_settings
 from app.db import get_db
 from app.models import Package, RemediationTask, Repo, Scan
 from app.schemas.scan import ScanGitHubRequest, ScanLocalRequest, ScanLocalResponse
@@ -21,6 +22,12 @@ from app.services.persistence import (
     persist_scan_result,
     remote_safe_value,
 )
+from app.services.public_safety import (
+    sanitize_public_identifier,
+    sanitize_public_text,
+    sanitize_public_value,
+)
+from app.services.path_policy import PathPolicyError
 from app.services.scan_service import ScanService
 
 router = APIRouter(prefix="/repos", tags=["repos"])
@@ -29,13 +36,25 @@ logger = logging.getLogger(__name__)
 
 @router.post("/scan-local", response_model=ScanLocalResponse)
 def scan_local(request: ScanLocalRequest, db: Session = Depends(get_db)) -> ScanLocalResponse:
-    result = ScanService().scan_local(request.path)
+    settings = get_settings()
+    try:
+        workspace_root = get_local_scan_workspace_root(settings)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    try:
+        result = ScanService().scan_local(
+            request.path,
+            workspace_root=workspace_root,
+        )
+    except (PathPolicyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     persisted_scan_id = None
     if request.persist:
         scan = persist_scan_result(db, result)
         persisted_scan_id = scan.id
     data = result.to_dict()
     return ScanLocalResponse(
+        schema_version=data["schema_version"],
         scan_id=result.scan_id,
         persisted_scan_id=persisted_scan_id,
         repo_profile=data["repo_profile"],
@@ -61,7 +80,7 @@ def scan_github(request: ScanGitHubRequest, db: Session = Depends(get_db)) -> Sc
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
         try:
-            result = ScanService().scan_local(str(repo_path))
+            result = ScanService().scan_local(str(repo_path), workspace_root=temp_dir)
         except Exception as exc:
             logger.warning(
                 "github_scan_failure",
@@ -82,6 +101,7 @@ def scan_github(request: ScanGitHubRequest, db: Session = Depends(get_db)) -> Sc
         persisted_scan_id = scan.id
     data = result.to_dict()
     return ScanLocalResponse(
+        schema_version=data["schema_version"],
         scan_id=result.scan_id,
         persisted_scan_id=persisted_scan_id,
         repo_profile=github_repo_profile(data["repo_profile"], repository, str(repo_path)),
@@ -185,12 +205,12 @@ def list_packages(repo_id: str, db: Session = Depends(get_db)) -> list:
     return [
         {
             "id": package.id,
-            "name": package.name,
-            "ecosystem": package.ecosystem,
-            "current_version": package.current_version,
-            "dependency_type": package.dependency_type,
+            "name": public_identifier_text(package.name),
+            "ecosystem": public_text(package.ecosystem),
+            "current_version": public_text(package.current_version),
+            "dependency_type": public_text(package.dependency_type),
             "is_direct": package.is_direct,
-            "parent_package": package.parent_package,
+            "parent_package": public_identifier_text(package.parent_package),
         }
         for package in packages
     ]
@@ -206,16 +226,28 @@ def list_remediation_tasks(repo_id: str, db: Session = Depends(get_db)) -> list:
     )
     return [
         {
-            "id": task.id,
-            "priority": task.priority,
+            "id": public_text(task.id),
+            "priority": public_text(task.priority),
             "risk_score": task.risk_score,
-            "status": task.status,
-            "owner": task.owner,
-            "recommended_action": task.recommended_action,
-            "patch_plan": task.patch_plan_json,
-            "test_plan": task.test_plan_json,
-            "rollback_plan": task.rollback_plan_json,
-            "citations": task.citations_json,
+            "status": public_text(task.status),
+            "owner": public_text(task.owner),
+            "recommended_action": public_text(task.recommended_action),
+            "patch_plan": sanitize_public_value(task.patch_plan_json),
+            "test_plan": sanitize_public_value(task.test_plan_json),
+            "rollback_plan": sanitize_public_value(task.rollback_plan_json),
+            "citations": sanitize_public_value(task.citations_json),
         }
         for task in tasks
     ]
+
+
+def public_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return sanitize_public_text(value)
+
+
+def public_identifier_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return sanitize_public_identifier(value)

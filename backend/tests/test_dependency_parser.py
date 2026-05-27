@@ -2,8 +2,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from app.services.dependency_parser import NodeDependencyParser
+from app.services.dependency_parser import DependencyParserError, NodeDependencyParser
 
 
 class NodeDependencyParserTest(unittest.TestCase):
@@ -64,6 +65,108 @@ class NodeDependencyParserTest(unittest.TestCase):
         self.assertIsNone(dependencies[0].current_version)
         self.assertEqual(dependencies[0].version_spec, "^4.17.20")
         self.assertTrue(dependencies[0].is_direct)
+
+    def test_malformed_manifest_error_does_not_leak_absolute_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text("{not-json", encoding="utf-8")
+
+            with self.assertRaises(DependencyParserError) as caught:
+                NodeDependencyParser().parse(str(root))
+
+        message = str(caught.exception)
+        self.assertIn("Invalid JSON", message)
+        self.assertNotIn(str(root), message)
+        self.assertNotIn("package.json", message)
+
+    def test_rejects_manifest_symlink_escape_without_leaking_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            outside = Path(tmp) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            outside_manifest = outside / "package.json"
+            outside_manifest.write_text(
+                json.dumps({"dependencies": {"outside-lib": "1.0.0"}}),
+                encoding="utf-8",
+            )
+            (root / "package.json").symlink_to(outside_manifest)
+
+            with self.assertRaises(DependencyParserError) as caught:
+                NodeDependencyParser().parse(str(root))
+
+        message = str(caught.exception)
+        self.assertIn("outside the repository", message)
+        self.assertNotIn(str(root), message)
+        self.assertNotIn(str(outside), message)
+        self.assertNotIn("outside-lib", message)
+
+    def test_rejects_lockfile_symlink_escape_without_leaking_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            outside = Path(tmp) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"inside-lib": "1.0.0"}}),
+                encoding="utf-8",
+            )
+            outside_lockfile = outside / "package-lock.json"
+            outside_lockfile.write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/outside-lib": {"version": "9.9.9"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").symlink_to(outside_lockfile)
+
+            with self.assertRaises(DependencyParserError) as caught:
+                NodeDependencyParser().parse(str(root))
+
+        message = str(caught.exception)
+        self.assertIn("outside the repository", message)
+        self.assertNotIn(str(root), message)
+        self.assertNotIn(str(outside), message)
+        self.assertNotIn("outside-lib", message)
+
+    def test_non_utf8_manifest_error_does_not_leak_absolute_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_bytes(b"\xff\xfe\x00")
+
+            with self.assertRaises(DependencyParserError) as caught:
+                NodeDependencyParser().parse(str(root))
+
+        message = str(caught.exception)
+        self.assertIn("Unable to read dependency file", message)
+        self.assertNotIn(str(root), message)
+        self.assertNotIn("package.json", message)
+
+    def test_manifest_oserror_does_not_leak_absolute_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text("{}", encoding="utf-8")
+
+            with (
+                patch.object(
+                    Path,
+                    "open",
+                    side_effect=OSError("disk failure under %s" % root),
+                ),
+                self.assertRaises(DependencyParserError) as caught,
+            ):
+                NodeDependencyParser().parse(str(root))
+
+        message = str(caught.exception)
+        self.assertIn("Unable to read dependency file", message)
+        self.assertNotIn(str(root), message)
+        self.assertNotIn("package.json", message)
 
 
 if __name__ == "__main__":
