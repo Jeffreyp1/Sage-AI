@@ -53,6 +53,42 @@ def test_redacts_inline_secret_fragments_under_safe_keys():
     }
 
 
+def test_redacts_inline_token_key_variants_under_safe_keys():
+    value = {
+        "message": (
+            "callback access_token=access-value refresh_token=refresh-value "
+            "accessToken=camel-access refreshToken: camel-refresh"
+        )
+    }
+
+    redacted = redact_trace_value(value)
+
+    assert redacted == {
+        "message": (
+            f"callback access_token={REDACTED} refresh_token={REDACTED} "
+            f"accessToken={REDACTED} refreshToken: {REDACTED}"
+        )
+    }
+
+
+def test_redacts_secret_cookie_pairs_anywhere_in_cookie_header():
+    value = {
+        "headers_dump": (
+            "Cookie: theme=light; sessionid=abc; csrftoken=def; locale=en; "
+            "refreshToken=ghi"
+        )
+    }
+
+    redacted = redact_trace_value(value)
+
+    assert redacted == {
+        "headers_dump": (
+            f"Cookie: theme=light; sessionid={REDACTED}; csrftoken={REDACTED}; "
+            f"locale=en; refreshToken={REDACTED}"
+        )
+    }
+
+
 def test_record_event_returns_structured_trace_fields():
     service = TraceService()
 

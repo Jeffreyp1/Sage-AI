@@ -4,6 +4,7 @@ import unittest
 from app.ai.contracts import (
     AIFindingSummaryRequest,
     Citation,
+    ClaimCheck,
     EvidenceItem,
     MockAIProvider,
     validate_finding_summary_response,
@@ -90,6 +91,37 @@ class AIContractsTest(unittest.TestCase):
         self.assertFalse(result.valid)
         self.assertTrue(result.blocked)
         self.assertEqual(result.unsupported_claim_ids, ["claim-unsupported-1"])
+
+    def test_validation_rejects_disallowed_dispositions_before_evidence_checks(self):
+        request = finding_request()
+        response = MockAIProvider().summarize_finding(request)
+        response = replace(
+            response,
+            claim_checks=[
+                ClaimCheck(
+                    claim_id="claim-bad-disposition",
+                    claim="This claim should not be accepted.",
+                    disposition="unsupported",
+                    evidence_ids=["missing-evidence"],
+                )
+            ],
+            citations=[],
+        )
+
+        result = validate_finding_summary_response(request, response)
+
+        self.assertFalse(result.valid)
+        self.assertTrue(result.blocked)
+        self.assertEqual(
+            result.errors[:3],
+            [
+                "Claim claim-bad-disposition uses disallowed disposition unsupported.",
+                "Claim claim-bad-disposition references unknown evidence id missing-evidence.",
+                "Claim claim-bad-disposition is unsupported.",
+            ],
+        )
+        self.assertEqual(result.invalid_citation_ids, ["missing-evidence"])
+        self.assertEqual(result.unsupported_claim_ids, ["claim-bad-disposition"])
 
     def test_validation_blocks_priority_and_risk_mutation(self):
         request = finding_request()

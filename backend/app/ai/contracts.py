@@ -273,6 +273,7 @@ def validate_finding_summary_response(
 
     evidence_ids = {item.id for item in request.evidence}
     claim_ids = {claim.claim_id for claim in response.claim_checks}
+    allowed_dispositions = set(request.safety_constraints.required_claim_dispositions)
 
     if response.finding_id != request.finding_id:
         mutated_fields.append("finding_id")
@@ -312,6 +313,12 @@ def validate_finding_summary_response(
             errors.append("Citation references unknown claim id %s." % citation.claim_id)
 
     for claim in response.claim_checks:
+        if claim.disposition not in allowed_dispositions:
+            errors.append(
+                "Claim %s uses disallowed disposition %s."
+                % (claim.claim_id, claim.disposition)
+            )
+
         invalid_evidence = sorted(set(claim.evidence_ids) - evidence_ids)
         for evidence_id in invalid_evidence:
             invalid_citation_ids.append(evidence_id)
