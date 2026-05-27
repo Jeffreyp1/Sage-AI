@@ -111,11 +111,27 @@ class TriageGraph:
             state.remediation_task,
             retrieved_chunks=state.evidence_chunks,
         )
+        retrieved_chunk_ids = [chunk.chunk_id for chunk in state.evidence_chunks]
+        bundle_evidence_count = evidence_count(bundle)
         output = {
             "finding_id": bundle.get("finding_id"),
-            "evidence_count": evidence_count(bundle),
-            "retrieved_chunk_ids": [chunk.chunk_id for chunk in state.evidence_chunks],
+            "evidence_count": bundle_evidence_count,
+            "retrieved_chunk_ids": retrieved_chunk_ids,
         }
+        self.trace_service.record_event(
+            agent_name="triage-graph",
+            event_type="ai.context_bundle",
+            input_json={
+                "task_id": state.remediation_task.get("task_id"),
+                "evidence_count": bundle_evidence_count,
+                "retrieved_chunk_ids": retrieved_chunk_ids,
+            },
+            retrieved_context_json={
+                "retrieved_chunk_ids": retrieved_chunk_ids,
+            },
+            output_json=output,
+            validation_status=PASSED,
+        )
         self.record_node(state, "ai_context_bundle", PASSED, output)
 
     def client_ai_validation_node(
@@ -141,6 +157,19 @@ class TriageGraph:
             "summary": validation.get("summary"),
             "validation": mapping_to_dict(validation.get("validation")),
         }
+        self.trace_service.record_event(
+            agent_name="triage-graph",
+            event_type="ai.output_validation",
+            input_json={
+                "task_id": state.remediation_task.get("task_id"),
+                "retrieved_chunk_ids": [chunk.chunk_id for chunk in state.evidence_chunks],
+            },
+            output_json={
+                "passed": output["passed"],
+                "blocked": blocked,
+            },
+            validation_status=status,
+        )
         self.record_node(state, "client_ai_validation", status, output)
 
     def repo_context_node(self, state: TriageWorkflowState) -> None:

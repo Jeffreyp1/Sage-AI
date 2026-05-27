@@ -1,6 +1,8 @@
 from app.services.public_safety import contains_unsafe_public_text
 from app.services import trace_service
 from app.services.trace_service import REDACTED, TraceService, redact_trace_value
+from app.agents import TriageGraph
+from app.services.rag_types import EvidenceChunk
 
 
 def test_redacts_secret_keys_and_token_values_recursively():
@@ -286,3 +288,194 @@ def test_validation_status_is_preserved_verbatim():
     )
 
     assert record["validation_status"] == "failed: missing citations"
+
+
+def test_client_ai_flow_records_bundle_and_validation_trace_events():
+    service = TraceService()
+    graph = TriageGraph(trace_service=service)
+    task = remediation_task_fixture()
+    chunks = evidence_chunks_fixture()
+
+    graph.run_with_client_ai(
+        remediation_task=task,
+        evidence_chunks=chunks,
+        ai_output=cited_ai_output_fixture(task),
+    )
+
+    records = service.list_records()
+    event_types = [record["event_type"] for record in records]
+    bundle_record = next(record for record in records if record["event_type"] == "ai.context_bundle")
+    validation_record = next(
+        record for record in records if record["event_type"] == "ai.output_validation"
+    )
+
+    assert "ai.context_bundle" in event_types
+    assert "ai.output_validation" in event_types
+    assert bundle_record["input_json"] == {
+        "task_id": "task_trace_123",
+        "evidence_count": 3,
+        "retrieved_chunk_ids": ["chunk-upload"],
+    }
+    assert validation_record["output_json"] == {
+        "passed": True,
+        "blocked": False,
+    }
+    assert validation_record["validation_status"] == "passed"
+
+
+def test_client_ai_flow_validation_trace_omits_blocked_details():
+    service = TraceService()
+    graph = TriageGraph(trace_service=service)
+    task = remediation_task_fixture()
+    poisoned_output = cited_ai_output_fixture(task)
+    poisoned_output["citations"] = [
+        {
+            "claim_id": "proof-of-concept-payload-claim",
+            "evidence_id": "/Users/auditor/private-token/tenant-42-case-abc",
+        }
+    ]
+    poisoned_output["claim_checks"][0]["claim_id"] = "proof-of-concept-payload-claim"
+    poisoned_output["claim_checks"][0]["evidence_ids"] = [
+        "/Users/auditor/private-token/tenant-42-case-abc"
+    ]
+
+    graph.run_with_client_ai(
+        remediation_task=task,
+        evidence_chunks=evidence_chunks_fixture(),
+        ai_output=poisoned_output,
+    )
+
+    explicit_ai_records = [
+        record for record in service.list_records() if str(record["event_type"]).startswith("ai.")
+    ]
+    validation_record = next(
+        record
+        for record in explicit_ai_records
+        if record["event_type"] == "ai.output_validation"
+    )
+    serialized = repr(explicit_ai_records).lower()
+
+    assert validation_record["output_json"] == {
+        "passed": False,
+        "blocked": True,
+    }
+    assert validation_record["validation_status"] == "blocked"
+    assert "validation" not in validation_record["output_json"]
+    assert "errors" not in serialized
+    assert "invalid_citation_ids" not in serialized
+    assert "tenant-42-case-abc" not in serialized
+    assert "/users/" not in serialized
+    assert "private-token" not in serialized
+    assert "payload" not in serialized
+
+
+def test_client_ai_flow_trace_events_do_not_leak_poisoned_values():
+    service = TraceService()
+    graph = TriageGraph(trace_service=service)
+    task = remediation_task_fixture()
+    task["task_id"] = "/Users/auditor/private-token/task"
+    task["evidence"][0]["claim"] = "Proof-of-concept payload uses token=ghp_secret123."
+
+    graph.run_with_client_ai(
+        remediation_task=task,
+        evidence_chunks=evidence_chunks_fixture(),
+        ai_output=cited_ai_output_fixture(task),
+    )
+
+    records = service.list_records()
+    serialized = repr(records).lower()
+
+    assert "/users/" not in serialized
+    assert "private-token" not in serialized
+    assert "ghp_secret123" not in serialized
+    assert "payload" not in serialized
+    assert contains_unsafe_public_text(records) is False
+
+
+def remediation_task_fixture() -> dict[str, object]:
+    return {
+        "task_id": "task_trace_123",
+        "repo": "payments-api",
+        "package": {
+            "name": "archive-utils",
+            "ecosystem": "npm",
+            "current_version": "1.4.0",
+            "dependency_type": "runtime",
+            "is_direct": True,
+        },
+        "vulnerability": {
+            "canonical_id": "GHSA-1234-5678",
+            "source_id": "CVE-2026-0001",
+            "aliases": ["CVE-2026-0001"],
+            "severity": "HIGH",
+            "summary": "archive-utils has unsafe deserialization.",
+            "fixed_versions": ["2.2.0"],
+        },
+        "risk": {
+            "priority": "P1_FIX_THIS_SPRINT",
+            "risk_score": 78,
+            "runtime_scope": "production",
+            "reachability": "reachable",
+            "confidence": "high",
+            "factors": ["High severity", "Production reachable"],
+            "rationale": ["Risk score 78 maps to P1_FIX_THIS_SPRINT."],
+        },
+        "evidence": [
+            {
+                "type": "lockfile_entry",
+                "source": "package-lock.json",
+                "claim": "archive-utils@1.4.0 is installed in package-lock.json.",
+            },
+            {
+                "type": "reachability",
+                "source": "src/upload.ts",
+                "claim": "archive-utils is imported by the production upload route.",
+            },
+        ],
+        "patch_plan": {
+            "recommended_action": "upgrade",
+            "target_version": "2.2.0",
+            "patch_complexity": "low",
+            "breaking_change_risk": "low",
+            "steps": ["Update archive-utils from 1.4.0 to 2.2.0"],
+        },
+        "test_plan": ["npm test"],
+        "rollback_plan": ["Revert dependency bump PR"],
+        "human_approval_required": True,
+    }
+
+
+def evidence_chunks_fixture() -> list[EvidenceChunk]:
+    return [
+        EvidenceChunk(
+            chunk_id="chunk-upload",
+            source_type="source_file",
+            content="archive-utils is imported by src/upload.ts in a production request path.",
+            metadata={"source": "src/upload.ts", "package": "archive-utils"},
+        )
+    ]
+
+
+def cited_ai_output_fixture(task: dict[str, object]) -> dict[str, object]:
+    package = task["package"]
+    vulnerability = task["vulnerability"]
+    risk = task["risk"]
+    return {
+        "finding_id": task["task_id"],
+        "package_name": package["name"],
+        "vulnerability_id": vulnerability["canonical_id"],
+        "priority": risk["priority"],
+        "risk_score": risk["risk_score"],
+        "summary": "archive-utils should be reviewed using cited Sage evidence.",
+        "explanation": "The response preserves scanner triage and cites the evidence bundle.",
+        "citations": [{"claim_id": "claim-1", "evidence_id": "ev-task-0eee8986d3be"}],
+        "claim_checks": [
+            {
+                "claim_id": "claim-1",
+                "claim": "archive-utils is imported by the production upload route.",
+                "disposition": "fact",
+                "evidence_ids": ["ev-task-0eee8986d3be"],
+            }
+        ],
+        "provider_name": "client-ai",
+    }
