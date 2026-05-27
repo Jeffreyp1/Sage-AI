@@ -239,6 +239,43 @@ def test_unsafe_public_text_does_not_leak_from_recorded_payloads():
         assert unsafe_text not in serialized
 
 
+def test_unsafe_public_text_does_not_leak_from_recorded_keys():
+    service = TraceService()
+
+    record = service.record_event(
+        trace_id="trace-safe-keys",
+        agent_name="reporter",
+        event_type="validation.error",
+        input_json={"payload key": "safe"},
+        retrieved_context_json=[{"proof-of-concept context key": "safe"}],
+        output_json={"exploit steps output key": "safe"},
+    )
+
+    assert not contains_unsafe_public_text(record["input_json"])
+    assert not contains_unsafe_public_text(record["retrieved_context_json"])
+    assert not contains_unsafe_public_text(record["output_json"])
+    serialized = str(record).lower()
+    for unsafe_text in ("payload key", "proof-of-concept context key", "exploit steps output key"):
+        assert unsafe_text not in serialized
+
+
+def test_secret_key_redaction_sanitizes_unsafe_mapping_keys():
+    redacted = redact_trace_value(
+        {
+            "payload token": "plain-secret",
+            "proof-of-concept-token": "plain-secret",
+            "exploit steps api_key": "plain-secret",
+        }
+    )
+
+    assert redacted == {
+        "[redacted] token": REDACTED,
+        "[redacted]-token": REDACTED,
+        "[redacted] api_key": REDACTED,
+    }
+    assert contains_unsafe_public_text(redacted) is False
+
+
 def test_validation_status_is_preserved_verbatim():
     service = TraceService()
 

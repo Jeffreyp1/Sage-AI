@@ -59,6 +59,25 @@ class PublicSafetyTest(unittest.TestCase):
             },
         )
 
+    def test_sanitize_public_value_sanitizes_mapping_keys_recursively(self):
+        value = {
+            "payload key": {
+                "proof-of-concept nested key": "safe value",
+                "items": [{"exploit steps item key": "malicious payload"}],
+            }
+        }
+
+        result = sanitize_public_value(value)
+        result_text = repr(result)
+
+        self.assertNotIn("payload key", result_text)
+        self.assertNotIn("proof-of-concept nested key", result_text)
+        self.assertNotIn("exploit steps item key", result_text)
+        self.assertFalse(contains_unsafe_public_text(result))
+
+    def test_contains_unsafe_public_text_checks_mapping_keys(self):
+        self.assertTrue(contains_unsafe_public_text({"payload key": "safe value"}))
+
     def test_contains_unsafe_public_text_uses_public_safety_patterns(self):
         self.assertTrue(
             contains_unsafe_public_text(

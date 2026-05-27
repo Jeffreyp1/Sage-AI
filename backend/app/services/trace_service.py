@@ -162,9 +162,9 @@ def redact_trace_value(value: object) -> JsonValue:
         for key, child in value.items():
             normalized_key = str(key)
             if is_secret_key(normalized_key):
-                redacted_mapping[normalized_key] = REDACTED
+                redacted_mapping[sanitize_text(normalized_key)] = REDACTED
                 continue
-            redacted_mapping[normalized_key] = redact_trace_value(child)
+            redacted_mapping[sanitize_text(normalized_key)] = redact_trace_value(child)
         return redacted_mapping
     return sanitize_text(str(value))
 

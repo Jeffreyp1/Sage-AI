@@ -41,7 +41,10 @@ def sanitize_public_value(value: object) -> object:
     if isinstance(value, list):
         return [sanitize_public_value(item) for item in value]
     if isinstance(value, Mapping):
-        return {str(key): sanitize_public_value(child) for key, child in value.items()}
+        return {
+            sanitize_text(str(key)): sanitize_public_value(child)
+            for key, child in value.items()
+        }
     return value
 
 
@@ -57,7 +60,8 @@ def walk_strings(value: object):
         yield value
         return
     if isinstance(value, Mapping):
-        for child in value.values():
+        for key, child in value.items():
+            yield from walk_strings(str(key))
             yield from walk_strings(child)
         return
     if isinstance(value, list):
