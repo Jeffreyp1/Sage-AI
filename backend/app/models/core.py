@@ -3,7 +3,20 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -37,6 +50,7 @@ class Organization(Base, TimestampMixin):
 
 class Repo(Base, TimestampMixin):
     __tablename__ = "repos"
+    __table_args__ = (UniqueConstraint("full_name", name="uq_repos_full_name"),)
 
     id = Column(String(36), primary_key=True, default=uuid_pk)
     org_id = Column(String(36), ForeignKey("organizations.id"), nullable=True)
@@ -108,6 +122,9 @@ class Vulnerability(Base, TimestampMixin):
 
 class VulnerabilityAlias(Base, TimestampMixin):
     __tablename__ = "vulnerability_aliases"
+    __table_args__ = (
+        UniqueConstraint("vulnerability_id", "alias", name="uq_vulnerability_aliases_identity"),
+    )
 
     id = Column(String(36), primary_key=True, default=uuid_pk)
     vulnerability_id = Column(String(36), ForeignKey("vulnerabilities.id"), nullable=False)
@@ -137,6 +154,9 @@ class PackageVulnerability(Base, TimestampMixin):
 
 class AdvisoryReference(Base, TimestampMixin):
     __tablename__ = "advisory_references"
+    __table_args__ = (
+        UniqueConstraint("vulnerability_id", "url", name="uq_advisory_references_identity"),
+    )
 
     id = Column(String(36), primary_key=True, default=uuid_pk)
     vulnerability_id = Column(String(36), ForeignKey("vulnerabilities.id"), nullable=False)
@@ -256,3 +276,28 @@ class LlmTrace(Base, TimestampMixin):
     token_count = Column(Integer, nullable=True)
     cost_usd = Column(Float, nullable=True)
 
+
+Index(
+    "uq_packages_identity",
+    Package.repo_id,
+    Package.name,
+    Package.ecosystem,
+    func.coalesce(Package.current_version, ""),
+    func.coalesce(Package.parent_package, ""),
+    unique=True,
+)
+Index(
+    "uq_package_vulnerabilities_identity",
+    PackageVulnerability.package_id,
+    PackageVulnerability.vulnerability_id,
+    func.coalesce(PackageVulnerability.affected_version, ""),
+    unique=True,
+)
+Index(
+    "uq_remediation_tasks_open",
+    RemediationTask.repo_id,
+    RemediationTask.package_vulnerability_id,
+    unique=True,
+    sqlite_where=RemediationTask.status == "open",
+    postgresql_where=RemediationTask.status == "open",
+)

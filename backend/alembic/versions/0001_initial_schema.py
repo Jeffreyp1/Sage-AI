@@ -51,6 +51,7 @@ def upgrade() -> None:
         sa.Column("language", sa.String(length=255), nullable=True),
         sa.Column("service_type", sa.String(length=255), nullable=True),
         *timestamps(),
+        sa.UniqueConstraint("full_name", name="uq_repos_full_name"),
     )
     op.create_table(
         "scans",
@@ -102,6 +103,11 @@ def upgrade() -> None:
         sa.Column("alias", sa.String(length=255), nullable=False),
         sa.Column("alias_type", sa.String(length=50), nullable=False),
         *timestamps(),
+        sa.UniqueConstraint(
+            "vulnerability_id",
+            "alias",
+            name="uq_vulnerability_aliases_identity",
+        ),
     )
     op.create_table(
         "advisory_references",
@@ -115,6 +121,11 @@ def upgrade() -> None:
         sa.Column("url", sa.Text(), nullable=False),
         sa.Column("reference_type", sa.String(length=100), nullable=True),
         *timestamps(),
+        sa.UniqueConstraint(
+            "vulnerability_id",
+            "url",
+            name="uq_advisory_references_identity",
+        ),
     )
     op.create_table(
         "repo_files",
@@ -241,9 +252,45 @@ def upgrade() -> None:
     op.create_index("ix_packages_repo_name", "packages", ["repo_id", "name"])
     op.create_index("ix_aliases_alias", "vulnerability_aliases", ["alias"])
     op.create_index("ix_tasks_repo_priority", "remediation_tasks", ["repo_id", "priority"])
+    op.create_index(
+        "uq_packages_identity",
+        "packages",
+        [
+            "repo_id",
+            "name",
+            "ecosystem",
+            sa.text("coalesce(current_version, '')"),
+            sa.text("coalesce(parent_package, '')"),
+        ],
+        unique=True,
+    )
+    op.create_index(
+        "uq_package_vulnerabilities_identity",
+        "package_vulnerabilities",
+        [
+            "package_id",
+            "vulnerability_id",
+            sa.text("coalesce(affected_version, '')"),
+        ],
+        unique=True,
+    )
+    op.create_index(
+        "uq_remediation_tasks_open",
+        "remediation_tasks",
+        ["repo_id", "package_vulnerability_id"],
+        unique=True,
+        postgresql_where=sa.text("status = 'open'"),
+        sqlite_where=sa.text("status = 'open'"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_remediation_tasks_open", table_name="remediation_tasks")
+    op.drop_index(
+        "uq_package_vulnerabilities_identity",
+        table_name="package_vulnerabilities",
+    )
+    op.drop_index("uq_packages_identity", table_name="packages")
     op.drop_index("ix_tasks_repo_priority", table_name="remediation_tasks")
     op.drop_index("ix_aliases_alias", table_name="vulnerability_aliases")
     op.drop_index("ix_packages_repo_name", table_name="packages")

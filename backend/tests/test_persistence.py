@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -14,7 +15,7 @@ from app.models import (
     VulnerabilityAlias,
 )
 from app.services.dependency_parser import ParsedDependency
-from app.services.persistence import persist_scan_result
+from app.services.persistence import PersistenceError, persist_scan_result
 from app.services.repo_ingestion import RepoProfile
 from app.services.scan_service import RemediationTaskOutput, ScanResult
 from app.services.vulnerability_normalizer import NormalizedVulnerability
@@ -116,6 +117,46 @@ def test_persisting_same_result_twice_is_idempotent_for_current_records():
         "Upgrade archive-utils to 2.2.0.",
         "Run focused regression tests.",
     ]
+
+
+def test_persist_scan_result_raises_when_task_package_link_is_missing():
+    db = make_session()
+    result = deterministic_scan_result()
+    result.remediation_tasks[0].package["name"] = "missing-package"
+
+    with pytest.raises(PersistenceError, match="missing-package"):
+        persist_scan_result(db, result)
+
+    assert db.query(Scan).count() == 0
+    assert db.query(RemediationTask).count() == 0
+
+
+def test_persist_scan_result_prevents_duplicate_natural_records():
+    db = make_session()
+    first_result = deterministic_scan_result()
+    duplicate_package = first_result.packages[0]
+    first_result.packages.append(duplicate_package)
+    first_result.vulnerabilities[0].aliases.append("CVE-2026-1234")
+    first_result.vulnerabilities[0].references.append(
+        {
+            "type": "ADVISORY",
+            "url": "https://example.test/advisories/GHSA-aaaa-bbbb-cccc",
+        }
+    )
+    first_result.remediation_tasks.append(first_result.remediation_tasks[0])
+    second_result = deterministic_scan_result()
+
+    persist_scan_result(db, first_result)
+    persist_scan_result(db, second_result)
+
+    assert db.query(Repo).count() == 1
+    assert db.query(Package).count() == 2
+    assert db.query(Vulnerability).count() == 1
+    assert db.query(VulnerabilityAlias).count() == 2
+    assert db.query(AdvisoryReference).count() == 1
+    assert db.query(PackageVulnerability).count() == 1
+    assert db.query(ReachabilityAssessment).count() == 1
+    assert db.query(RemediationTask).count() == 1
 
 
 def make_session():
