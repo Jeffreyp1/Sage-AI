@@ -1,6 +1,6 @@
 """Client-AI context bundles and output validation."""
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from app.ai.contracts import (
     AIFindingSummaryResponse,
@@ -10,6 +10,7 @@ from app.ai.contracts import (
 )
 from app.services.ai_summary_service import build_finding_summary_request
 from app.services.public_safety import sanitize_public_text, sanitize_public_value
+from app.services.rag_types import EvidenceChunk
 
 
 AI_CONTEXT_BUNDLE_SCHEMA_VERSION = "vulnsage.ai_context_bundle.v1"
@@ -19,11 +20,14 @@ class AIOutputParseError(ValueError):
     """Raised when a client AI response does not match the expected shape."""
 
 
-def build_ai_context_bundle(task: Mapping[str, object]) -> dict[str, object]:
+def build_ai_context_bundle(
+    task: Mapping[str, object],
+    retrieved_chunks: Iterable[EvidenceChunk] = (),
+) -> dict[str, object]:
     """Build a focused, safe case file for a client-provided AI assistant."""
 
     safe_task = mapping_value(sanitize_public_value(dict(task)))
-    request = build_finding_summary_request(safe_task, [])
+    request = build_finding_summary_request(safe_task, retrieved_chunks)
     request_dict = request.to_dict()
     return {
         "schema_version": AI_CONTEXT_BUNDLE_SCHEMA_VERSION,

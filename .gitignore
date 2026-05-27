@@ -9,4 +9,5 @@ __pycache__/
 .ruff_cache/
 
 backend/.venv/
+backend/.venv*/
 postgres_data/

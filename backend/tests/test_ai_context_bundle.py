@@ -1,4 +1,5 @@
 from app.services.ai_context_bundle import build_ai_context_bundle, validate_client_ai_output
+from app.services.rag_types import EvidenceChunk
 
 
 def test_ai_context_bundle_contains_stable_evidence_ids_prompt_and_schema():
@@ -18,6 +19,25 @@ def test_ai_context_bundle_contains_stable_evidence_ids_prompt_and_schema():
     assert "Use only the evidence in this bundle" in first["prompt"]
     assert "citations" in first["expected_output_schema"]["required"]
     assert "Every fact or inference claim must cite matching evidence IDs." in first["citation_rules"]
+
+
+def test_ai_context_bundle_includes_retrieved_chunks_after_task_evidence():
+    task = remediation_task_fixture()
+    chunks = [
+        EvidenceChunk(
+            chunk_id="source-upload-route",
+            source_type="source_file",
+            content="archive-utils is used by POST /receipts/upload.",
+            metadata={"source": "src/routes/receipts.ts", "package": "archive-utils"},
+        )
+    ]
+
+    bundle = build_ai_context_bundle(task, retrieved_chunks=chunks)
+
+    evidence = bundle["ai_request"]["evidence"]
+    assert evidence[-1]["metadata"]["chunk_id"] == "source-upload-route"
+    assert evidence[-1]["metadata"]["source_type"] == "source_file"
+    assert evidence[-1]["kind"] == "source_file"
 
 
 def test_validate_client_ai_output_accepts_cited_claims():
