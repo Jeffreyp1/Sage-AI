@@ -28,6 +28,14 @@ ALLOWED_AI_OUTPUT_FIELDS = {
     "provider_name",
     "errors",
 }
+ALLOWED_AI_CITATION_FIELDS = {"claim_id", "evidence_id", "quote", "note"}
+ALLOWED_AI_CLAIM_CHECK_FIELDS = {
+    "claim_id",
+    "claim",
+    "disposition",
+    "evidence_ids",
+    "rationale",
+}
 
 
 class AIOutputParseError(ValueError):
@@ -127,8 +135,44 @@ def blocked_validation_result(message: str) -> dict[str, object]:
 def unsupported_ai_output_fields(value: Mapping[str, object]) -> list[str]:
     fields: list[str] = []
     for key in value:
-        if str(key) not in ALLOWED_AI_OUTPUT_FIELDS:
-            fields.append(str(key))
+        key_text = str(key)
+        if key_text not in ALLOWED_AI_OUTPUT_FIELDS:
+            fields.append(key_text)
+
+    fields.extend(
+        unsupported_nested_fields(
+            value.get("citations"),
+            allowed_fields=ALLOWED_AI_CITATION_FIELDS,
+            path="citations",
+        )
+    )
+    fields.extend(
+        unsupported_nested_fields(
+            value.get("claim_checks"),
+            allowed_fields=ALLOWED_AI_CLAIM_CHECK_FIELDS,
+            path="claim_checks",
+        )
+    )
+    return fields
+
+
+def unsupported_nested_fields(
+    value: object,
+    *,
+    allowed_fields: set[str],
+    path: str,
+) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    fields: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            continue
+        for key in item:
+            key_text = str(key)
+            if key_text not in allowed_fields:
+                fields.append("%s[%s].%s" % (path, index, key_text))
     return fields
 
 
