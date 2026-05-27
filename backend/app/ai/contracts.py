@@ -1,6 +1,6 @@
 """Safe request and response contracts for future AI providers."""
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Dict, List, Literal, Optional, Protocol, Tuple
 
 
@@ -274,6 +274,24 @@ def validate_finding_summary_response(
     evidence_ids = {item.id for item in request.evidence}
     claim_ids = {claim.claim_id for claim in response.claim_checks}
 
+    if response.finding_id != request.finding_id:
+        mutated_fields.append("finding_id")
+        errors.append(
+            "AI response changed finding id from %s to %s."
+            % (request.finding_id, response.finding_id)
+        )
+    if response.package_name != request.package_name:
+        mutated_fields.append("package_name")
+        errors.append(
+            "AI response changed package name from %s to %s."
+            % (request.package_name, response.package_name)
+        )
+    if response.vulnerability_id != request.vulnerability_id:
+        mutated_fields.append("vulnerability_id")
+        errors.append(
+            "AI response changed vulnerability id from %s to %s."
+            % (request.vulnerability_id, response.vulnerability_id)
+        )
     if response.priority != request.priority:
         mutated_fields.append("priority")
         errors.append(
@@ -350,16 +368,32 @@ def first_evidence_quote(request: AIFindingSummaryRequest) -> Optional[str]:
 
 
 def unsafe_response_markers(response: AIFindingSummaryResponse) -> List[str]:
-    text_parts = [response.summary, response.explanation]
-    for claim in response.claim_checks:
-        text_parts.append(claim.claim)
-        text_parts.append(claim.rationale)
-    response_text = "\n".join(text_parts).lower()
+    response_text = "\n".join(public_response_strings(response)).lower()
     markers = []
     for marker in UNSAFE_RESPONSE_MARKERS:
         if marker in response_text:
             markers.append(marker)
     return markers
+
+
+def public_response_strings(value: object) -> List[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, bool | int | float) or value is None:
+        return []
+    if is_dataclass(value) and not isinstance(value, type):
+        return public_response_strings(asdict(value))
+    if isinstance(value, dict):
+        text_parts: List[str] = []
+        for child in value.values():
+            text_parts.extend(public_response_strings(child))
+        return text_parts
+    if isinstance(value, list | tuple | set):
+        text_parts = []
+        for child in value:
+            text_parts.extend(public_response_strings(child))
+        return text_parts
+    return []
 
 
 def dedupe_keep_order(values: List[str]) -> List[str]:

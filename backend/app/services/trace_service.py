@@ -15,11 +15,35 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
 REDACTED = "[redacted]"
-SECRET_KEY_MARKERS = ("token", "api_key", "password", "secret", "authorization")
+SECRET_KEY_MARKERS = (
+    "token",
+    "api_key",
+    "password",
+    "secret",
+    "authorization",
+    "cookie",
+    "session_secret",
+)
 GITHUB_TOKEN_PATTERN = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
 )
 BEARER_TOKEN_PATTERN = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE)
+AUTHORIZATION_FRAGMENT_PATTERN = re.compile(
+    r"(?P<prefix>\bauthorization\b\s*[:=]\s*)"
+    r"(?P<secret>(?:Bearer|Basic|Digest|Token)\s+[A-Za-z0-9._~+/=-]+|[^\s,;]+)",
+    re.IGNORECASE,
+)
+COOKIE_SECRET_FRAGMENT_PATTERN = re.compile(
+    r"(?P<prefix>\bcookie\b\s*[:=]\s*)"
+    r"(?:session(?:id)?|session[_-]?secret|sid|token|auth(?:entication)?[_-]?token)"
+    r"\s*=\s*[^\s,;]+",
+    re.IGNORECASE,
+)
+INLINE_SECRET_ASSIGNMENT_PATTERN = re.compile(
+    r"(?P<prefix>\b(?:password|api[_-]?key|token|session[_-]?secret)\b\s*[:=]\s*)"
+    r"(?P<secret>[^\s,;&]+)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -131,4 +155,16 @@ def is_secret_key(key: str) -> bool:
 
 def redact_secret_text(value: str) -> str:
     redacted = GITHUB_TOKEN_PATTERN.sub(REDACTED, value)
-    return BEARER_TOKEN_PATTERN.sub(REDACTED, redacted)
+    redacted = BEARER_TOKEN_PATTERN.sub(REDACTED, redacted)
+    redacted = AUTHORIZATION_FRAGMENT_PATTERN.sub(
+        lambda match: "%s%s" % (match.group("prefix"), REDACTED),
+        redacted,
+    )
+    redacted = COOKIE_SECRET_FRAGMENT_PATTERN.sub(
+        lambda match: "%s%s" % (match.group("prefix"), REDACTED),
+        redacted,
+    )
+    return INLINE_SECRET_ASSIGNMENT_PATTERN.sub(
+        lambda match: "%s%s" % (match.group("prefix"), REDACTED),
+        redacted,
+    )

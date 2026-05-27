@@ -26,6 +26,33 @@ def test_redacts_secret_keys_and_token_values_recursively():
     }
 
 
+def test_redacts_inline_secret_fragments_under_safe_keys():
+    value = {
+        "message": (
+            "deploy args password=hunter2 api_key=plain token=abc123 "
+            "session_secret=session-value"
+        ),
+        "headers_dump": (
+            "Authorization: Bearer abcdefghijklmnop "
+            "Cookie: sessionid=s3cr3t; theme=light"
+        ),
+        "notes": ["client token: abc123 and password: hunter2"],
+    }
+
+    redacted = redact_trace_value(value)
+
+    assert redacted == {
+        "message": (
+            f"deploy args password={REDACTED} api_key={REDACTED} token={REDACTED} "
+            f"session_secret={REDACTED}"
+        ),
+        "headers_dump": (
+            f"Authorization: {REDACTED} Cookie: {REDACTED}; theme=light"
+        ),
+        "notes": [f"client token: {REDACTED} and password: {REDACTED}"],
+    }
+
+
 def test_record_event_returns_structured_trace_fields():
     service = TraceService()
 
