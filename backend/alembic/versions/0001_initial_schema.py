@@ -18,8 +18,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def timestamps() -> list:
     return [
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     ]
 
 
@@ -51,15 +51,15 @@ def upgrade() -> None:
         sa.Column("language", sa.String(length=255), nullable=True),
         sa.Column("service_type", sa.String(length=255), nullable=True),
         *timestamps(),
-        sa.UniqueConstraint("full_name", name="uq_repos_full_name"),
+        sa.UniqueConstraint("provider", "full_name", name="uq_repos_provider_full_name"),
     )
     op.create_table(
         "scans",
         sa.Column("id", sa.String(length=36), primary_key=True),
         sa.Column("repo_id", sa.String(length=36), sa.ForeignKey("repos.id"), nullable=False),
         sa.Column("status", sa.String(length=50), nullable=False),
-        sa.Column("started_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
-        sa.Column("completed_at", sa.DateTime(), nullable=True),
+        sa.Column("started_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("commit_sha", sa.String(length=64), nullable=True),
         sa.Column("summary_json", sa.JSON(), nullable=False),
         *timestamps(),
