@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from app.eval.generate_demo_report import (
     DEFAULT_REPO_PATH,
@@ -52,6 +53,22 @@ class DemoReportTest(unittest.TestCase):
 
             report = json.loads(first)
             self.assertTrue(validate_report(report)["passed"])
+
+    def test_main_returns_error_for_output_path_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "report.json"
+            output_path.mkdir()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(["--output", str(output_path)])
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("Error: unable to write demo report:", stderr.getvalue())
+            self.assertIn(str(output_path), stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_generated_report_json_does_not_leak_absolute_paths(self):
         default_report = generate_report(DEFAULT_REPO_PATH)
@@ -129,6 +146,63 @@ class DemoReportTest(unittest.TestCase):
             self.assertFalse(output_path.exists())
             self.assertIn("Error: fixture file not found:", stderr.getvalue())
             self.assertIn(str(missing_fixture_path), stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_main_returns_error_for_fixture_path_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_path = root / "report.json"
+            fixture_path = root / "fixtures"
+            fixture_path.mkdir()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "--output",
+                        str(output_path),
+                        "--fixtures",
+                        str(fixture_path),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertFalse(output_path.exists())
+            self.assertIn("Error: fixture file could not be read:", stderr.getvalue())
+            self.assertIn(str(fixture_path), stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_main_returns_error_for_unreadable_fixture_os_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_path = root / "report.json"
+            fixture_path = root / "fixtures.json"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with patch.object(
+                Path,
+                "read_text",
+                side_effect=PermissionError("permission denied"),
+            ):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main(
+                        [
+                            "--output",
+                            str(output_path),
+                            "--fixtures",
+                            str(fixture_path),
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertFalse(output_path.exists())
+            self.assertIn("Error: fixture file could not be read:", stderr.getvalue())
+            self.assertIn(str(fixture_path), stderr.getvalue())
+            self.assertIn("permission denied", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_main_returns_error_for_invalid_fixture_json(self):
