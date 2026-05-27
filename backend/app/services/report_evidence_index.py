@@ -4,7 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 
+from app.services.ai_summary_service import remediation_task_query
 from app.services.public_safety import sanitize_public_identifier, sanitize_public_text
+from app.services.rag_retrieval import InMemoryEvidenceIndex
 from app.services.rag_types import EvidenceChunk
 
 
@@ -25,6 +27,32 @@ def chunks_from_report(report: Mapping[str, object]) -> list[EvidenceChunk]:
         chunks.extend(_finding_evidence_chunks(context, task))
 
     return chunks
+
+
+def retrieved_chunks_for_task(
+    report: Mapping[str, object],
+    task: Mapping[str, object],
+    *,
+    top_k: int = 5,
+) -> list[EvidenceChunk]:
+    """Retrieve report chunks most relevant to one remediation task."""
+
+    if top_k <= 0:
+        return []
+
+    context = _TaskChunkContext.from_task(_repo_id(report), 0, task)
+    index = InMemoryEvidenceIndex()
+    index.add_chunks(chunks_from_report(report))
+    results = index.search(
+        remediation_task_query(task),
+        top_k=top_k,
+        filters={
+            "repo_id": context.repo_id,
+            "package": context.package,
+            "vulnerability_id": context.vulnerability_id,
+        },
+    )
+    return [result.chunk for result in results]
 
 
 @dataclass(frozen=True)

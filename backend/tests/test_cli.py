@@ -354,6 +354,102 @@ class CliTest(unittest.TestCase):
             self.assertIn("Use only the evidence in this bundle", bundle["prompt"])
             self.assertIn("citations", bundle["expected_output_schema"]["required"])
 
+    def test_ai_context_bundle_can_include_rag_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "scan.json"
+            output_path = root / "bundle.json"
+            report_path.write_text(json.dumps(scan_report_fixture()), encoding="utf-8")
+
+            exit_code = main(
+                [
+                    "ai-context-bundle",
+                    str(report_path),
+                    "--task-id",
+                    "task-archive-utils",
+                    "--include-rag",
+                    "--top-k",
+                    "5",
+                    "--output",
+                    str(output_path),
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            bundle = json.loads(output_path.read_text(encoding="utf-8"))
+            retrieved_evidence = [
+                item
+                for item in bundle["ai_request"]["evidence"]
+                if item["metadata"].get("origin") == "retrieved_context"
+            ]
+            self.assertGreater(len(retrieved_evidence), 0)
+            self.assertEqual(retrieved_evidence[0]["metadata"]["package"], "archive-utils")
+
+    def test_ai_context_bundle_rejects_invalid_rag_top_k_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "scan.json"
+            output_path = root / "bundle.json"
+            report_path.write_text(json.dumps(scan_report_fixture()), encoding="utf-8")
+            stderr = io.StringIO()
+
+            with redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "ai-context-bundle",
+                        str(report_path),
+                        "--include-rag",
+                        "--top-k",
+                        "0",
+                        "--output",
+                        str(output_path),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 1)
+            self.assertFalse(output_path.exists())
+            self.assertIn("Error: --top-k must be between 1 and 10", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_ai_context_bundle_rag_output_sanitizes_poisoned_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "scan.json"
+            output_path = root / "bundle.json"
+            report = scan_report_fixture()
+            report["scan_id"] = "/Users/auditor/private/repo"
+            report["remediation_tasks"][0]["task_id"] = "secret.task-archive-utils"
+            report["remediation_tasks"][0]["evidence"][0]["source"] = (
+                "/Users/auditor/private/repo/package-lock.json"
+            )
+            report["remediation_tasks"][0]["evidence"][0]["claim"] = (
+                "Proof-of-concept payload uses token=ghp_secret123."
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            exit_code = main(
+                [
+                    "ai-context-bundle",
+                    str(report_path),
+                    "--task-id",
+                    "secret.task-archive-utils",
+                    "--include-rag",
+                    "--output",
+                    str(output_path),
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            bundle = json.loads(output_path.read_text(encoding="utf-8"))
+            evidence_payload = json.dumps(bundle["ai_request"]["evidence"]).lower()
+            finding_payload = json.dumps(bundle["finding"]).lower()
+            encoded = evidence_payload + finding_payload
+            self.assertNotIn("/users/", encoded)
+            self.assertNotIn("private/repo", encoded)
+            self.assertNotIn("secret.task", encoded)
+            self.assertNotIn("ghp_secret123", encoded)
+            self.assertNotIn("payload", encoded)
+
     def test_validate_ai_output_blocks_uncited_client_ai_response(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

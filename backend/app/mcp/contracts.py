@@ -92,6 +92,14 @@ class FindingInput(ContractModel):
     task_id: str = Field(max_length=MAX_INPUT_STRING_LENGTH)
 
 
+class AIContextBundleInput(FindingInput):
+    include_rag: bool = Field(
+        default=False,
+        description="Include retrieved report evidence chunks in the AI context bundle.",
+    )
+    top_k: int = Field(default=5, ge=1, le=10)
+
+
 class FindingOutput(ContractModel):
     scan_id: str
     finding: RemediationTaskSchema
@@ -186,7 +194,7 @@ def tool_contracts() -> tuple[ToolContract, ...]:
         ToolContract(
             name="get_ai_context_bundle",
             description="Return a client-AI case file with evidence IDs, rules, prompt, and schema.",
-            input_model=FindingInput,
+            input_model=AIContextBundleInput,
             output_model=AIContextBundleOutput,
         ),
         ToolContract(

@@ -515,6 +515,38 @@ def test_ai_context_bundle_and_validation_tools_support_client_ai_flow(tmp_path)
     assert validation.blocked is False
 
 
+def test_ai_context_bundle_can_include_rag_evidence_from_stored_report(tmp_path):
+    workspace = tmp_path / "workspace"
+    repo = workspace / "payments-api"
+    storage = workspace / "mcp-reports"
+    repo.mkdir(parents=True)
+    handlers = McpToolHandlers(
+        workspace_root=workspace,
+        storage_dir=storage,
+        scan_service=RecordingScanService(scan_report_fixture()),
+    )
+    scan = handlers.call_tool("scan_repo", {"repo_path": "payments-api", "offline": True})
+
+    bundle_output = handlers.call_tool(
+        "get_ai_context_bundle",
+        {
+            "scan_id": scan.scan_id,
+            "task_id": "task-archive-utils",
+            "include_rag": True,
+            "top_k": 5,
+        },
+    )
+
+    evidence = bundle_output.bundle["ai_request"]["evidence"]
+    retrieved_evidence = [
+        item for item in evidence if item["metadata"].get("origin") == "retrieved_context"
+    ]
+    assert len(evidence) > 2
+    assert len(retrieved_evidence) > 0
+    assert retrieved_evidence[0]["metadata"]["package"] == "archive-utils"
+    assert retrieved_evidence[0]["metadata"]["vulnerability_id"] == "CVE-2026-0001"
+
+
 def test_validate_ai_output_blocks_uncited_client_ai_claims(tmp_path):
     workspace = tmp_path / "workspace"
     repo = workspace / "payments-api"

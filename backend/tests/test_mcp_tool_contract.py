@@ -1,4 +1,5 @@
 from app.mcp.contracts import (
+    AIContextBundleInput,
     AIContextBundleOutput,
     FindingInput,
     MCP_TOOL_NAMES,
@@ -109,3 +110,20 @@ def test_ai_context_bundle_output_exposes_ai_request_and_prompt_contract():
     assert "bundle" in schema["properties"]
     assert "scan_id" in schema["properties"]
     assert "task_id" in schema["properties"]
+
+
+def test_ai_context_bundle_input_supports_optional_rag_retrieval():
+    request = AIContextBundleInput.model_validate(
+        {
+            "scan_id": "scan-test",
+            "task_id": "task-archive-utils",
+            "include_rag": True,
+            "top_k": 3,
+        }
+    )
+    schema = AIContextBundleInput.model_json_schema()
+
+    assert request.include_rag is True
+    assert request.top_k == 3
+    assert schema["properties"]["top_k"]["minimum"] == 1
+    assert schema["properties"]["top_k"]["maximum"] == 10

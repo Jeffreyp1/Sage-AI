@@ -21,6 +21,7 @@ from app.services.public_safety import (
     sanitize_public_text,
 )
 from app.services.rag_types import EvidenceChunk
+from app.services.report_evidence_index import retrieved_chunks_for_task
 from app.services.scan_service import ScanService
 from app.services.trace_service import redact_secret_text
 
@@ -76,6 +77,17 @@ def main(argv: Optional[list] = None) -> int:
     context_parser.add_argument(
         "--task-id",
         help="Build context for this remediation task. Defaults to the first task.",
+    )
+    context_parser.add_argument(
+        "--include-rag",
+        action="store_true",
+        help="Include retrieved report evidence chunks in the AI context bundle.",
+    )
+    context_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=5,
+        help="Maximum number of retrieved evidence chunks to include.",
     )
     validate_ai_parser = subparsers.add_parser(
         "validate-ai-output",
@@ -197,7 +209,17 @@ def main(argv: Optional[list] = None) -> int:
             report_model = read_scan_report(Path(args.report_json))
             report = report_model.model_dump(mode="json")
             task = select_remediation_task(report, args.task_id)
-            bundle = build_ai_context_bundle(safe_cli_mapping(task))
+            safe_task = safe_cli_mapping(task)
+            retrieved_chunks: list[EvidenceChunk] = []
+            if args.include_rag:
+                if args.top_k < 1 or args.top_k > 10:
+                    raise CliError("--top-k must be between 1 and 10")
+                retrieved_chunks = retrieved_chunks_for_task(
+                    report,
+                    safe_task,
+                    top_k=args.top_k,
+                )
+            bundle = build_ai_context_bundle(safe_task, retrieved_chunks=retrieved_chunks)
             write_json_output(Path(args.output), bundle)
         except CliError as error:
             print("Error: %s" % error, file=sys.stderr)

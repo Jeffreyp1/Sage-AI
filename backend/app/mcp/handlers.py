@@ -10,6 +10,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.eval.report_validator import validate_report as validate_public_report
 from app.mcp.contracts import (
+    AIContextBundleInput,
     AIContextBundleOutput,
     CompactFinding,
     FindingEvidenceOutput,
@@ -36,6 +37,8 @@ from app.services.public_safety import (
     sanitize_public_text,
     sanitize_public_value,
 )
+from app.services.report_evidence_index import retrieved_chunks_for_task
+from app.services.rag_types import EvidenceChunk
 from app.services.scan_service import ScanService
 
 
@@ -245,10 +248,19 @@ class McpToolHandlers:
         )
 
     def _get_ai_context_bundle(self, model: BaseModel) -> AIContextBundleOutput:
-        request = as_model(model, FindingInput)
+        request = as_model(model, AIContextBundleInput)
         report = self._load_report(request.scan_id)
         finding = find_task(report, request.task_id)
-        bundle = build_ai_context_bundle(finding.model_dump(mode="json"))
+        report_payload = report.model_dump(mode="json")
+        finding_payload = finding.model_dump(mode="json")
+        retrieved_chunks: list[EvidenceChunk] = []
+        if request.include_rag:
+            retrieved_chunks = retrieved_chunks_for_task(
+                report_payload,
+                finding_payload,
+                top_k=request.top_k,
+            )
+        bundle = build_ai_context_bundle(finding_payload, retrieved_chunks=retrieved_chunks)
         return AIContextBundleOutput(
             scan_id=report.scan_id,
             task_id=safe_text(finding.task_id),
