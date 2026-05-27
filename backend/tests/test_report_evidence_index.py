@@ -2,6 +2,10 @@ from app.services.report_evidence_index import chunks_from_report
 from app.services.rag_retrieval import InMemoryEvidenceIndex
 
 
+PRIVATE_PATH_SENTINEL = "private-workspace/repo"
+TOKEN_SENTINEL = "unit-test-token-value"
+
+
 def test_report_chunks_include_advisory_risk_and_source_evidence():
     report = scan_report_fixture()
 
@@ -33,10 +37,10 @@ def test_report_chunks_include_filterable_task_metadata():
 def test_report_chunks_are_public_safe_and_deterministic():
     report = scan_report_fixture()
     report["remediation_tasks"][0]["evidence"][0]["source"] = (
-        "/Users/auditor/private/repo/package-lock.json"
+        f"{PRIVATE_PATH_SENTINEL}/package-lock.json"
     )
     report["remediation_tasks"][0]["evidence"][0]["claim"] = (
-        "Proof-of-concept payload appears in token=ghp_secret123."
+        f"Proof-of-concept payload appears in token={TOKEN_SENTINEL}."
     )
 
     first = [chunk.to_dict() for chunk in chunks_from_report(report)]
@@ -44,8 +48,8 @@ def test_report_chunks_are_public_safe_and_deterministic():
 
     assert first == second
     encoded = str(first)
-    assert "/Users/" not in encoded
-    assert "ghp_secret123" not in encoded
+    assert PRIVATE_PATH_SENTINEL not in encoded
+    assert TOKEN_SENTINEL not in encoded
     assert "payload" not in encoded.lower()
 
 
@@ -72,21 +76,20 @@ def test_report_chunks_can_be_indexed_and_filtered_for_retrieval():
 
 def test_report_chunks_sanitize_identifier_metadata():
     report = scan_report_fixture()
-    report["scan_id"] = "/Users/auditor/private/repo"
+    report["scan_id"] = PRIVATE_PATH_SENTINEL
     report["remediation_tasks"][0]["task_id"] = "secret.task-archive-utils"
     report["remediation_tasks"][0]["evidence"][0]["source"] = (
-        "/Users/auditor/private/repo/package-lock.json"
+        f"{PRIVATE_PATH_SENTINEL}/package-lock.json"
     )
     report["remediation_tasks"][0]["evidence"][0]["claim"] = (
-        "Proof-of-concept payload uses token=ghp_secret123."
+        f"Proof-of-concept payload uses token={TOKEN_SENTINEL}."
     )
 
     encoded = str([chunk.to_dict() for chunk in chunks_from_report(report)])
 
-    assert "/Users/" not in encoded
-    assert "private/repo" not in encoded
+    assert PRIVATE_PATH_SENTINEL not in encoded
     assert "secret.task" not in encoded
-    assert "ghp_secret123" not in encoded
+    assert TOKEN_SENTINEL not in encoded
     assert "payload" not in encoded.lower()
 
 

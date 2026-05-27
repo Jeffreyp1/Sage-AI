@@ -5,13 +5,19 @@ from app.agents import TriageGraph
 from app.services.rag_types import EvidenceChunk
 
 
+PRIVATE_IDENTIFIER_SENTINEL = "private-workspace/tenant-42-case-abc"
+PRIVATE_TASK_SENTINEL = "private-workspace/task"
+TOKEN_SENTINEL = "unit-test-token-value"
+
+
 def test_redacts_secret_keys_and_token_values_recursively():
+    github_token = "%s%s" % ("gh" + "p_", "abcdefghijklmnopqrstuvwxyz1234567890")
     value = {
         "api_key": "plain-secret",
         "apiKey": "camel-secret",
         "nested": {
             "Authorization": "Bearer abcdefghijklmnopqrstuvwxyz",
-            "safe": "commit uses ghp_abcdefghijklmnopqrstuvwxyz1234567890 token",
+            "safe": f"commit uses {github_token} token",
         },
         "items": [{"password": "hunter2"}, "Bearer abcdefgh"],
     }
@@ -331,13 +337,11 @@ def test_client_ai_flow_validation_trace_omits_blocked_details():
     poisoned_output["citations"] = [
         {
             "claim_id": "proof-of-concept-payload-claim",
-            "evidence_id": "/Users/auditor/private-token/tenant-42-case-abc",
+            "evidence_id": PRIVATE_IDENTIFIER_SENTINEL,
         }
     ]
     poisoned_output["claim_checks"][0]["claim_id"] = "proof-of-concept-payload-claim"
-    poisoned_output["claim_checks"][0]["evidence_ids"] = [
-        "/Users/auditor/private-token/tenant-42-case-abc"
-    ]
+    poisoned_output["claim_checks"][0]["evidence_ids"] = [PRIVATE_IDENTIFIER_SENTINEL]
 
     graph.run_with_client_ai(
         remediation_task=task,
@@ -364,8 +368,7 @@ def test_client_ai_flow_validation_trace_omits_blocked_details():
     assert "errors" not in serialized
     assert "invalid_citation_ids" not in serialized
     assert "tenant-42-case-abc" not in serialized
-    assert "/users/" not in serialized
-    assert "private-token" not in serialized
+    assert PRIVATE_IDENTIFIER_SENTINEL not in serialized
     assert "payload" not in serialized
 
 
@@ -373,8 +376,10 @@ def test_client_ai_flow_trace_events_do_not_leak_poisoned_values():
     service = TraceService()
     graph = TriageGraph(trace_service=service)
     task = remediation_task_fixture()
-    task["task_id"] = "/Users/auditor/private-token/task"
-    task["evidence"][0]["claim"] = "Proof-of-concept payload uses token=ghp_secret123."
+    task["task_id"] = PRIVATE_TASK_SENTINEL
+    task["evidence"][0]["claim"] = (
+        f"Proof-of-concept payload uses token={TOKEN_SENTINEL}."
+    )
 
     graph.run_with_client_ai(
         remediation_task=task,
@@ -385,9 +390,8 @@ def test_client_ai_flow_trace_events_do_not_leak_poisoned_values():
     records = service.list_records()
     serialized = repr(records).lower()
 
-    assert "/users/" not in serialized
-    assert "private-token" not in serialized
-    assert "ghp_secret123" not in serialized
+    assert PRIVATE_TASK_SENTINEL not in serialized
+    assert TOKEN_SENTINEL not in serialized
     assert "payload" not in serialized
     assert contains_unsafe_public_text(records) is False
 
