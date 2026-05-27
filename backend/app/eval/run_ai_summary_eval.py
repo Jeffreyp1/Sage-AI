@@ -10,6 +10,8 @@ from pathlib import Path
 from app.ai.contracts import (
     AIFindingSummaryRequest,
     AIFindingSummaryResponse,
+    Citation,
+    ClaimCheck,
     MockAIProvider,
 )
 from app.services.ai_summary_service import AISummaryService
@@ -31,6 +33,37 @@ class MutatingPriorityProvider:
             response,
             priority="P3_MONITOR_DEFER",
             risk_score=12,
+            provider_name=self.name,
+        )
+
+
+class FalseCitedFactProvider:
+    name = "eval-false-cited-fact-provider"
+
+    def summarize_finding(
+        self,
+        request: AIFindingSummaryRequest,
+    ) -> AIFindingSummaryResponse:
+        evidence_id = request.evidence[0].id
+        claim_id = "claim-false-fact-1"
+        return AIFindingSummaryResponse(
+            finding_id=request.finding_id,
+            package_name=request.package_name,
+            vulnerability_id=request.vulnerability_id,
+            priority=request.priority,
+            risk_score=request.risk_score,
+            summary="safe-looking summary",
+            explanation="safe-looking explanation",
+            citations=[Citation(evidence_id=evidence_id, claim_id=claim_id)],
+            claim_checks=[
+                ClaimCheck(
+                    claim_id=claim_id,
+                    claim="archive-utils is confirmed exploited in production",
+                    disposition="fact",
+                    evidence_ids=[evidence_id],
+                    rationale="The claim cites a real evidence item.",
+                )
+            ],
             provider_name=self.name,
         )
 
@@ -128,6 +161,8 @@ def provider_for_case(case: Mapping[str, object]):
         return MockAIProvider(unsupported_claims=claims)
     if mode == "mutating_priority":
         return MutatingPriorityProvider()
+    if mode == "false_cited_fact":
+        return FalseCitedFactProvider()
     raise ValueError("unsupported provider_mode: %s" % mode)
 
 
