@@ -11,6 +11,29 @@ from app.schemas.report import REPORT_SCHEMA_VERSION
 
 
 class CliTest(unittest.TestCase):
+    def test_cli_help_lists_all_commands(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as exit_info:
+                main(["--help"])
+
+        self.assertEqual(exit_info.exception.code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        help_text = stdout.getvalue()
+        for command in (
+            "scan",
+            "summarize-report",
+            "ai-context-bundle",
+            "validate-ai-output",
+            "ai-demo",
+            "ai-upgrade-demo",
+            "validate-report",
+            "findings",
+        ):
+            self.assertIn(command, help_text)
+
     def test_scan_writes_json_output_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -84,7 +107,7 @@ class CliTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
 
-        with patch("app.cli.ScanService", return_value=RawErrorScanService()):
+        with patch("app.cli_commands.ScanService", return_value=RawErrorScanService()):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 exit_code = main(["scan", ".", "--workspace-root", "."])
 

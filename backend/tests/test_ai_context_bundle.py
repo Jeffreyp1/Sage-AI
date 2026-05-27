@@ -198,6 +198,20 @@ def test_validate_client_ai_output_blocks_unsafe_generated_text():
     assert result["validation"]["errors"] == ["AI response contained unsafe text."]
 
 
+def test_validate_client_ai_output_blocks_unsafe_text_before_parse_errors():
+    task = remediation_task_fixture()
+    output = {
+        "summary": "This includes exploit steps and a malicious payload.",
+    }
+
+    result = validate_client_ai_output(task, output)
+
+    assert result["passed"] is False
+    assert result["blocked"] is True
+    assert result["validation"]["errors"] == ["AI response contained unsafe text."]
+    assert "finding_id" not in result["summary"]
+
+
 def remediation_task_fixture() -> dict[str, object]:
     return {
         "task_id": "task-archive-utils",
