@@ -36,7 +36,16 @@ def main(argv: Optional[list] = None) -> int:
         client = OfflineOsvClient() if args.offline else None
         result = ScanService(osv_client=client).scan_local(args.path)
         if args.output:
-            write_json_output(Path(args.output), result.to_dict())
+            output_path = Path(args.output)
+            try:
+                write_json_output(output_path, result.to_dict())
+            except OSError as error:
+                print(
+                    "Error: unable to write output file: %s: %s"
+                    % (output_path, error.strerror or error),
+                    file=sys.stderr,
+                )
+                return 1
             return 0
         if args.json:
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))

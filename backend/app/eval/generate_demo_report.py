@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -34,7 +35,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    report = generate_report(repo_path=Path(args.repo), fixture_path=Path(args.fixtures))
+    try:
+        report = generate_report(repo_path=Path(args.repo), fixture_path=Path(args.fixtures))
+    except ValueError as error:
+        print("Error: %s" % error, file=sys.stderr)
+        return 1
+
     validation = validate_report(report)
     if validation["passed"] is not True:
         print(json.dumps(validation, indent=2, sort_keys=True))
@@ -53,17 +59,38 @@ def generate_report(repo_path: Path, fixture_path: Path = DEFAULT_FIXTURE_PATH) 
 
 
 def load_fixture_responses(path: Path) -> dict[str, list[dict[str, object]]]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw_data = path.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise ValueError("fixture file not found: %s" % path) from error
+
+    try:
+        data = json.loads(raw_data)
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            "invalid fixture JSON: %s: %s at line %d column %d"
+            % (path, error.msg, error.lineno, error.colno)
+        ) from error
+
     if not isinstance(data, dict):
         raise ValueError("fixture OSV responses must be a JSON object")
 
     responses: dict[str, list[dict[str, object]]] = {}
     for package_name, vulnerabilities in data.items():
-        if not isinstance(package_name, str) or not isinstance(vulnerabilities, list):
-            continue
-        responses[package_name] = [
-            vulnerability for vulnerability in vulnerabilities if isinstance(vulnerability, dict)
-        ]
+        if not isinstance(package_name, str):
+            raise ValueError("fixture package name must be a string")
+        if not isinstance(vulnerabilities, list):
+            raise ValueError("fixture package entry for %s must be a list" % package_name)
+
+        package_vulnerabilities: list[dict[str, object]] = []
+        for index, vulnerability in enumerate(vulnerabilities):
+            if not isinstance(vulnerability, dict):
+                raise ValueError(
+                    "fixture vulnerability entry for %s at index %d must be a JSON object"
+                    % (package_name, index)
+                )
+            package_vulnerabilities.append(vulnerability)
+        responses[package_name] = package_vulnerabilities
     return responses
 
 
