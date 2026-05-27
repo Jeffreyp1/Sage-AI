@@ -124,6 +124,15 @@ def main(argv: Optional[list] = None) -> int:
         required=True,
         help="Directory where demo artifacts should be written.",
     )
+    ai_upgrade_demo_parser = subparsers.add_parser(
+        "ai-upgrade-demo",
+        help="Run the RAG-backed client-AI orchestration demo and write proof artifacts.",
+    )
+    ai_upgrade_demo_parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory where demo artifacts should be written.",
+    )
     validate_parser = subparsers.add_parser(
         "validate-report",
         help="Validate a public scan report JSON file.",
@@ -283,6 +292,17 @@ def main(argv: Optional[list] = None) -> int:
             return 1
         except OSError:
             print("Error: unable to write AI demo artifacts", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["validation"]["passed"] is True else 1
+    if args.command == "ai-upgrade-demo":
+        try:
+            result = run_ai_upgrade_demo(Path(args.output_dir))
+        except CliError as error:
+            print("Error: %s" % error, file=sys.stderr)
+            return 1
+        except OSError:
+            print("Error: unable to write AI upgrade demo artifacts", file=sys.stderr)
             return 1
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if result["validation"]["passed"] is True else 1
@@ -668,15 +688,67 @@ def run_ai_demo(output_dir: Path) -> dict[str, object]:
     }
 
 
+def run_ai_upgrade_demo(output_dir: Path) -> dict[str, object]:
+    from app.agents.triage_graph import TriageGraph
+    from app.eval.generate_demo_report import DEFAULT_REPO_PATH, generate_report
+    from app.services.trace_service import TraceService
+
+    report = generate_report(repo_path=DEFAULT_REPO_PATH)
+    report_model = ScanReport.model_validate(report)
+    report_payload = report_model.model_dump(mode="json")
+    task = safe_cli_mapping(select_remediation_task(report_payload, None))
+    retrieved_chunks = retrieved_chunks_for_task(report_payload, task, top_k=5)
+    bundle = build_ai_context_bundle(task, retrieved_chunks=retrieved_chunks)
+    sample_output = sample_ai_output_from_bundle(bundle)
+    validation = validate_client_ai_output(
+        task,
+        sample_output,
+        retrieved_chunks=retrieved_chunks,
+    )
+
+    trace_service = TraceService()
+    workflow_state = TriageGraph(trace_service=trace_service).run_with_client_ai(
+        remediation_task=task,
+        evidence_chunks=retrieved_chunks,
+        ai_output=sample_output,
+    )
+    orchestration_trace = {
+        "workflow_state": workflow_state.to_dict(),
+        "trace_records": deterministic_trace_records(trace_service.list_records()),
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = {
+        "scan_report": "scan-report.json",
+        "rag_ai_context_bundle": "rag-ai-context-bundle.json",
+        "sample_ai_output": "sample-ai-output.json",
+        "client_ai_validation": "client-ai-validation.json",
+        "orchestration_trace": "orchestration-trace.json",
+    }
+    write_json_output(output_dir / artifacts["scan_report"], report_payload)
+    write_json_output(output_dir / artifacts["rag_ai_context_bundle"], bundle)
+    write_json_output(output_dir / artifacts["sample_ai_output"], sample_output)
+    write_json_output(output_dir / artifacts["client_ai_validation"], validation)
+    write_json_output(output_dir / artifacts["orchestration_trace"], orchestration_trace)
+    return {
+        "artifacts": artifacts,
+        "validation": validation,
+        "workflow_state": orchestration_trace["workflow_state"],
+    }
+
+
 def sample_ai_output_from_bundle(bundle: Mapping[str, object]) -> dict[str, object]:
     request = mapping_value(bundle.get("ai_request"))
     evidence = request.get("evidence")
     if not isinstance(evidence, list) or len(evidence) == 0:
         raise CliError("AI context bundle contains no evidence")
-    first_evidence = mapping_value(evidence[0])
+    first_evidence = sample_evidence_item(evidence)
     evidence_id = string_value(first_evidence.get("id"))
     if evidence_id is None:
         raise CliError("AI context bundle evidence is missing an id")
+    claim = string_value(first_evidence.get("content")) or (
+        "This finding should be reviewed using Sage evidence."
+    )
     return {
         "finding_id": string_value(request.get("finding_id")) or "unknown",
         "package_name": string_value(request.get("package_name")) or "unknown",
@@ -695,13 +767,31 @@ def sample_ai_output_from_bundle(bundle: Mapping[str, object]) -> dict[str, obje
         "claim_checks": [
             {
                 "claim_id": "claim-1",
-                "claim": "This finding should be reviewed using Sage evidence.",
+                "claim": claim,
                 "disposition": "fact",
                 "evidence_ids": [evidence_id],
             }
         ],
         "provider_name": "sample-client-ai",
     }
+
+
+def sample_evidence_item(evidence: list[object]) -> Mapping[str, object]:
+    for item in evidence:
+        evidence_item = mapping_value(item)
+        metadata = mapping_value(evidence_item.get("metadata"))
+        if metadata.get("origin") == "retrieved_context":
+            return evidence_item
+    return mapping_value(evidence[0])
+
+
+def deterministic_trace_records(records: list[dict[str, object]]) -> list[dict[str, object]]:
+    deterministic: list[dict[str, object]] = []
+    for index, record in enumerate(records, start=1):
+        stable_record = dict(record)
+        stable_record["trace_id"] = "demo-trace-%03d" % index
+        deterministic.append(stable_record)
+    return deterministic
 
 
 def write_json_output(path: Path, report: dict[str, object]) -> None:

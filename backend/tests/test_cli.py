@@ -648,6 +648,90 @@ class CliTest(unittest.TestCase):
             ):
                 self.assertTrue((output_dir / filename).exists(), filename)
 
+    def test_ai_upgrade_demo_writes_rag_validation_and_trace_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "demo"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(["ai-upgrade-demo", "--output-dir", str(output_dir)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            result = json.loads(stdout.getvalue())
+            self.assertTrue(result["validation"]["passed"])
+
+            artifacts = result["artifacts"]
+            for key in (
+                "scan_report",
+                "rag_ai_context_bundle",
+                "sample_ai_output",
+                "client_ai_validation",
+                "orchestration_trace",
+            ):
+                self.assertTrue((output_dir / artifacts[key]).exists(), key)
+
+            bundle = json.loads(
+                (output_dir / artifacts["rag_ai_context_bundle"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            retrieved = [
+                item
+                for item in bundle["ai_request"]["evidence"]
+                if item["metadata"].get("origin") == "retrieved_context"
+            ]
+            self.assertGreater(len(retrieved), 0)
+
+            sample_output = json.loads(
+                (output_dir / artifacts["sample_ai_output"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            cited_evidence_ids = {
+                citation["evidence_id"] for citation in sample_output["citations"]
+            }
+            self.assertTrue(
+                any(
+                    item["id"] in cited_evidence_ids
+                    for item in retrieved
+                )
+            )
+
+            trace = json.loads(
+                (output_dir / artifacts["orchestration_trace"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            event_types = [record["event_type"] for record in trace["trace_records"]]
+            self.assertIn("ai.context_bundle", event_types)
+            self.assertIn("ai.output_validation", event_types)
+            self.assertEqual(trace["workflow_state"]["status"], "awaiting_human_approval")
+
+    def test_ai_upgrade_demo_outputs_are_deterministic(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_dir = root / "first"
+            second_dir = root / "second"
+
+            first_exit = main(["ai-upgrade-demo", "--output-dir", str(first_dir)])
+            second_exit = main(["ai-upgrade-demo", "--output-dir", str(second_dir)])
+
+            self.assertEqual(first_exit, 0)
+            self.assertEqual(second_exit, 0)
+            for filename in (
+                "scan-report.json",
+                "rag-ai-context-bundle.json",
+                "sample-ai-output.json",
+                "client-ai-validation.json",
+                "orchestration-trace.json",
+            ):
+                first = json.loads((first_dir / filename).read_text(encoding="utf-8"))
+                second = json.loads((second_dir / filename).read_text(encoding="utf-8"))
+                self.assertEqual(first, second, filename)
+
     def test_validate_report_prints_summary_for_valid_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

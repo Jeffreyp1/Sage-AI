@@ -73,6 +73,17 @@ This writes:
 /tmp/vulnsage-ai-demo/ai-validation.json
 ```
 
+Run the experimental RAG + orchestration demo:
+
+```bash
+cd backend
+.venv/bin/vulnsage ai-upgrade-demo --output-dir /tmp/vulnsage-ai-upgrade-demo
+```
+
+This writes a scan report, RAG-backed AI context bundle, sample client-AI
+output, validation result, and orchestration trace. It still uses deterministic
+sample AI output, so it does not require an API key.
+
 Or use the API:
 
 ```bash
@@ -199,6 +210,13 @@ cd backend
 The validator fails closed when the AI changes protected fields, cites unknown
 evidence, makes fact/inference claims without matching citations, includes
 unsupported claims, or emits unsafe exploit-style language.
+
+One-command experimental proof path:
+
+```bash
+cd backend
+.venv/bin/vulnsage ai-upgrade-demo --output-dir /tmp/vulnsage-ai-upgrade-demo
+```
 
 ## Client AI Setup
 
