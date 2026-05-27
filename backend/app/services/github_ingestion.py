@@ -2,11 +2,14 @@
 
 from dataclasses import dataclass
 from hashlib import sha256
+import logging
 from pathlib import Path
 import re
 import subprocess
 from urllib.parse import urlparse
 
+
+logger = logging.getLogger(__name__)
 
 OWNER_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 REPO_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -99,6 +102,12 @@ def clone_github_repo(url: str, base_directory: str | Path, timeout_seconds: int
         repository.clone_url,
         str(destination),
     ]
+    log_extra = {
+        "github_owner": repository.owner,
+        "github_repo": repository.repo,
+        "destination_name": destination.name,
+    }
+    logger.info("github_clone_start", extra=log_extra)
     try:
         subprocess.run(
             command,
@@ -109,10 +118,19 @@ def clone_github_repo(url: str, base_directory: str | Path, timeout_seconds: int
         )
     except subprocess.CalledProcessError as exc:
         detail = _clone_error_detail(exc)
+        logger.warning(
+            "github_clone_failure",
+            extra={**log_extra, "returncode": exc.returncode},
+        )
         raise GitHubCloneError("Unable to clone GitHub repository: %s" % detail) from exc
     except subprocess.TimeoutExpired as exc:
+        logger.warning(
+            "github_clone_failure",
+            extra={**log_extra, "timeout_seconds": timeout_seconds},
+        )
         raise GitHubCloneError("Unable to clone GitHub repository: clone timed out.") from exc
 
+    logger.info("github_clone_success", extra=log_extra)
     return destination
 
 
