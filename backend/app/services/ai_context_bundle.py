@@ -6,7 +6,9 @@ from app.ai.contracts import (
     AIFindingSummaryResponse,
     Citation,
     ClaimCheck,
+    UNSAFE_RESPONSE_MARKERS,
     validate_finding_summary_response,
+    unsafe_marker_found,
 )
 from app.services.ai_summary_service import build_finding_summary_request
 from app.services.public_safety import sanitize_public_text, sanitize_public_value
@@ -48,6 +50,22 @@ def validate_client_ai_output(
 ) -> dict[str, object]:
     safe_task = mapping_value(sanitize_public_value(dict(task)))
     request = build_finding_summary_request(safe_task, retrieved_chunks)
+    unsafe_markers = unsafe_client_output_markers(ai_output)
+    if len(unsafe_markers) > 0:
+        return {
+            "passed": False,
+            "blocked": True,
+            "summary": "FAIL AI output validation: AI response contained unsafe text.",
+            "validation": {
+                "valid": False,
+                "blocked": True,
+                "errors": ["AI response contained unsafe text."],
+                "warnings": [],
+                "invalid_citation_ids": [],
+                "unsupported_claim_ids": [],
+                "mutated_fields": [],
+            },
+        }
 
     try:
         response = parse_ai_output(ai_output)
@@ -97,6 +115,44 @@ def compact_finding(task: Mapping[str, object]) -> dict[str, object]:
             }
         )
     )
+
+
+def unsafe_client_output_markers(value: Mapping[str, object]) -> list[str]:
+    text = "\n".join(client_generated_strings(value)).lower()
+    markers: list[str] = []
+    for marker in UNSAFE_RESPONSE_MARKERS:
+        if unsafe_marker_found(marker, text):
+            markers.append(marker)
+    return markers
+
+
+def client_generated_strings(value: Mapping[str, object]) -> list[str]:
+    strings: list[str] = []
+    for key in ("summary", "explanation", "errors"):
+        strings.extend(strings_from_value(value.get(key)))
+
+    for citation in list_value(value.get("citations")):
+        citation_mapping = mapping_value(citation)
+        strings.extend(strings_from_value(citation_mapping.get("quote")))
+        strings.extend(strings_from_value(citation_mapping.get("note")))
+
+    for claim_check in list_value(value.get("claim_checks")):
+        claim_mapping = mapping_value(claim_check)
+        strings.extend(strings_from_value(claim_mapping.get("claim")))
+        strings.extend(strings_from_value(claim_mapping.get("rationale")))
+
+    return strings
+
+
+def strings_from_value(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        strings: list[str] = []
+        for item in value:
+            strings.extend(strings_from_value(item))
+        return strings
+    return []
 
 
 def citation_rules() -> list[str]:
@@ -286,3 +342,9 @@ def mapping_value(value: object) -> dict[str, object]:
     if isinstance(value, Mapping):
         return dict(value)
     return {}
+
+
+def list_value(value: object) -> list[object]:
+    if isinstance(value, list):
+        return value
+    return []

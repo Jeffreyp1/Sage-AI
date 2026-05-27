@@ -160,6 +160,44 @@ def test_validate_client_ai_output_blocks_uncited_claims():
     assert "matching citation" in result["summary"]
 
 
+def test_validate_client_ai_output_blocks_unsafe_generated_text():
+    task = remediation_task_fixture()
+    bundle = build_ai_context_bundle(task)
+    request = bundle["ai_request"]
+    evidence_id = request["evidence"][0]["id"]
+    output = {
+        "finding_id": request["finding_id"],
+        "package_name": request["package_name"],
+        "vulnerability_id": request["vulnerability_id"],
+        "priority": request["priority"],
+        "risk_score": request["risk_score"],
+        "summary": "archive-utils should be upgraded.",
+        "explanation": "This includes exploit steps and a malicious payload.",
+        "citations": [
+            {
+                "claim_id": "claim-1",
+                "evidence_id": evidence_id,
+                "note": "proof of concept details",
+            }
+        ],
+        "claim_checks": [
+            {
+                "claim_id": "claim-1",
+                "claim": "archive-utils should be upgraded.",
+                "disposition": "fact",
+                "evidence_ids": [evidence_id],
+            }
+        ],
+        "provider_name": "client-ai",
+    }
+
+    result = validate_client_ai_output(task, output)
+
+    assert result["passed"] is False
+    assert result["blocked"] is True
+    assert result["validation"]["errors"] == ["AI response contained unsafe text."]
+
+
 def remediation_task_fixture() -> dict[str, object]:
     return {
         "task_id": "task-archive-utils",
