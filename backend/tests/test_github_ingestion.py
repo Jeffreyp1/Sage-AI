@@ -137,6 +137,30 @@ class GitHubIngestionTest(unittest.TestCase):
         self.assertNotIn(str(Path(temp_dir).resolve()), str(logger.warning.call_args))
         self.assertNotIn("https://github.com/acme/missing.git", str(logger.warning.call_args))
 
+    def test_clone_os_error_raises_domain_error_and_logs_sanitized_identity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch(
+                    "app.services.github_ingestion.subprocess.run",
+                    side_effect=OSError("git cannot execute"),
+                ),
+                patch("app.services.github_ingestion.logger") as logger,
+            ):
+                with self.assertRaises(GitHubCloneError) as caught:
+                    clone_github_repo("https://github.com/acme/missing", temp_dir)
+
+        self.assertIn("git could not be executed", str(caught.exception))
+        logger.warning.assert_called_once()
+        message = logger.warning.call_args.args[0]
+        extra = logger.warning.call_args.kwargs["extra"]
+        self.assertEqual(message, "github_clone_failure")
+        self.assertEqual(extra["github_owner"], "acme")
+        self.assertEqual(extra["github_repo"], "missing")
+        self.assertTrue(extra["destination_name"].startswith("acme-missing-"))
+        self.assertEqual(extra["error_type"], "OSError")
+        self.assertNotIn(str(Path(temp_dir).resolve()), str(logger.warning.call_args))
+        self.assertNotIn("https://github.com/acme/missing.git", str(logger.warning.call_args))
+
 
 if __name__ == "__main__":
     unittest.main()

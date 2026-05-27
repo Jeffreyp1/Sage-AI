@@ -129,6 +129,14 @@ def clone_github_repo(url: str, base_directory: str | Path, timeout_seconds: int
             extra={**log_extra, "timeout_seconds": timeout_seconds},
         )
         raise GitHubCloneError("Unable to clone GitHub repository: clone timed out.") from exc
+    except OSError as exc:
+        logger.warning(
+            "github_clone_failure",
+            extra={**log_extra, "error_type": type(exc).__name__},
+        )
+        raise GitHubCloneError(
+            "Unable to clone GitHub repository: git could not be executed."
+        ) from exc
 
     logger.info("github_clone_success", extra=log_extra)
     return destination

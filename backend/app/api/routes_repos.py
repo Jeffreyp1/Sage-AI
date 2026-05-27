@@ -1,5 +1,6 @@
 """Repository and scan API routes."""
 
+import logging
 import tempfile
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,6 +20,7 @@ from app.services.persistence import RepoPersistenceIdentity, persist_scan_resul
 from app.services.scan_service import ScanService
 
 router = APIRouter(prefix="/repos", tags=["repos"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/scan-local", response_model=ScanLocalResponse)
@@ -54,7 +56,21 @@ def scan_github(request: ScanGitHubRequest, db: Session = Depends(get_db)) -> Sc
         except GitHubCloneError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        result = ScanService().scan_local(str(repo_path))
+        try:
+            result = ScanService().scan_local(str(repo_path))
+        except Exception as exc:
+            logger.warning(
+                "github_scan_failure",
+                extra={
+                    "github_owner": repository.owner,
+                    "github_repo": repository.repo,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise HTTPException(
+                status_code=422,
+                detail="Unable to scan GitHub repository.",
+            ) from exc
 
     persisted_scan_id = None
     if request.persist:
