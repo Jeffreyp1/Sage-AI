@@ -547,6 +547,66 @@ def test_ai_context_bundle_can_include_rag_evidence_from_stored_report(tmp_path)
     assert retrieved_evidence[0]["metadata"]["vulnerability_id"] == "CVE-2026-0001"
 
 
+def test_validate_ai_output_accepts_rag_evidence_from_stored_report(tmp_path):
+    workspace = tmp_path / "workspace"
+    repo = workspace / "payments-api"
+    storage = workspace / "mcp-reports"
+    repo.mkdir(parents=True)
+    handlers = McpToolHandlers(
+        workspace_root=workspace,
+        storage_dir=storage,
+        scan_service=RecordingScanService(scan_report_fixture()),
+    )
+    scan = handlers.call_tool("scan_repo", {"repo_path": "payments-api", "offline": True})
+    bundle_output = handlers.call_tool(
+        "get_ai_context_bundle",
+        {
+            "scan_id": scan.scan_id,
+            "task_id": "task-archive-utils",
+            "include_rag": True,
+        },
+    )
+    request = bundle_output.bundle["ai_request"]
+    retrieved_evidence = [
+        item
+        for item in request["evidence"]
+        if item["metadata"].get("origin") == "retrieved_context"
+    ][0]
+
+    validation = handlers.call_tool(
+        "validate_ai_output",
+        {
+            "scan_id": scan.scan_id,
+            "task_id": "task-archive-utils",
+            "include_rag": True,
+            "ai_output": {
+                "finding_id": request["finding_id"],
+                "package_name": request["package_name"],
+                "vulnerability_id": request["vulnerability_id"],
+                "priority": request["priority"],
+                "risk_score": request["risk_score"],
+                "summary": "archive-utils is supported by retrieved Sage evidence.",
+                "explanation": "The output cites a retrieved evidence item from the bundle.",
+                "citations": [
+                    {"claim_id": "claim-1", "evidence_id": retrieved_evidence["id"]}
+                ],
+                "claim_checks": [
+                    {
+                        "claim_id": "claim-1",
+                        "claim": str(retrieved_evidence["content"]),
+                        "disposition": "fact",
+                        "evidence_ids": [retrieved_evidence["id"]],
+                    }
+                ],
+                "provider_name": "client-ai",
+            },
+        },
+    )
+
+    assert validation.passed is True
+    assert validation.blocked is False
+
+
 def test_validate_ai_output_blocks_uncited_client_ai_claims(tmp_path):
     workspace = tmp_path / "workspace"
     repo = workspace / "payments-api"

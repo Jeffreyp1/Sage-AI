@@ -105,6 +105,31 @@ def evidence_chunks() -> list[EvidenceChunk]:
     ]
 
 
+def cited_client_ai_output(task: dict[str, object]) -> dict[str, object]:
+    package = task["package"]
+    vulnerability = task["vulnerability"]
+    risk = task["risk"]
+    return {
+        "finding_id": task["task_id"],
+        "package_name": package["name"],
+        "vulnerability_id": vulnerability["canonical_id"],
+        "priority": risk["priority"],
+        "risk_score": risk["risk_score"],
+        "summary": "archive-utils should be reviewed using cited Sage evidence.",
+        "explanation": "The response preserves scanner triage and cites the evidence bundle.",
+        "citations": [{"claim_id": "claim-1", "evidence_id": "ev-task-0eee8986d3be"}],
+        "claim_checks": [
+            {
+                "claim_id": "claim-1",
+                "claim": "archive-utils is imported by the production upload route.",
+                "disposition": "fact",
+                "evidence_ids": ["ev-task-0eee8986d3be"],
+            }
+        ],
+        "provider_name": "client-ai",
+    }
+
+
 def many_evidence_chunks(count: int) -> list[EvidenceChunk]:
     chunks: list[EvidenceChunk] = []
     for index in range(count):
@@ -429,6 +454,54 @@ def test_human_approval_is_required_for_risky_actions() -> None:
         "accept_risk",
         "mark_fixed",
     ]
+
+
+def test_triage_graph_records_rag_bundle_validation_and_human_gate() -> None:
+    graph = TriageGraph()
+    task = remediation_task()
+    output = cited_client_ai_output(task)
+    output["citations"] = [{"claim_id": "claim-1", "evidence_id": "ev-chunk-23ac3397cf6d"}]
+    output["claim_checks"][0]["claim"] = (
+        "archive-utils is imported by src/upload.ts in a production request path."
+    )
+    output["claim_checks"][0]["evidence_ids"] = ["ev-chunk-23ac3397cf6d"]
+    bundle = graph.run_with_client_ai(
+        remediation_task=task,
+        evidence_chunks=evidence_chunks(),
+        ai_output=output,
+    )
+
+    node_names = [node.node_name for node in bundle.node_results]
+
+    assert "ai_context_bundle" in node_names
+    assert "client_ai_validation" in node_names
+    assert bundle.status == "awaiting_human_approval"
+    assert bundle.human_approval is not None
+    assert bundle.human_approval.required is True
+
+
+def test_triage_graph_client_ai_validation_failure_blocks_human_gate() -> None:
+    graph = TriageGraph()
+    task = remediation_task()
+    invalid_output = cited_client_ai_output(task)
+    invalid_output["citations"] = []
+
+    state = graph.run_with_client_ai(
+        remediation_task=task,
+        evidence_chunks=evidence_chunks(),
+        ai_output=invalid_output,
+    )
+
+    node_statuses = {
+        result.node_name: result.validation_status for result in state.node_results
+    }
+
+    assert state.status == "blocked"
+    assert state.approved is False
+    assert node_statuses["client_ai_validation"] == "blocked"
+    assert state.human_approval is not None
+    assert state.human_approval.status == "blocked"
+    assert "Client AI output validation blocked human approval." in state.blocked_reasons
 
 
 def test_node_traces_exist_and_show_ai_validation_failure() -> None:

@@ -104,6 +104,17 @@ def main(argv: Optional[list] = None) -> int:
         action="store_true",
         help="Print structured validator output.",
     )
+    validate_ai_parser.add_argument(
+        "--include-rag",
+        action="store_true",
+        help="Validate against retrieved report evidence chunks too.",
+    )
+    validate_ai_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=5,
+        help="Maximum number of retrieved evidence chunks to include.",
+    )
     ai_demo_parser = subparsers.add_parser(
         "ai-demo",
         help="Run the no-key AI MVP demo and write all proof artifacts.",
@@ -237,7 +248,21 @@ def main(argv: Optional[list] = None) -> int:
             report = report_model.model_dump(mode="json")
             task = select_remediation_task(report, args.task_id)
             ai_output = read_mapping_json(Path(args.ai_output_json), "AI output JSON")
-            result = validate_client_ai_output(safe_cli_mapping(task), ai_output)
+            safe_task = safe_cli_mapping(task)
+            retrieved_chunks: list[EvidenceChunk] = []
+            if args.include_rag:
+                if args.top_k < 1 or args.top_k > 10:
+                    raise CliError("--top-k must be between 1 and 10")
+                retrieved_chunks = retrieved_chunks_for_task(
+                    report,
+                    safe_task,
+                    top_k=args.top_k,
+                )
+            result = validate_client_ai_output(
+                safe_task,
+                ai_output,
+                retrieved_chunks=retrieved_chunks,
+            )
         except CliError as error:
             print("Error: %s" % error, file=sys.stderr)
             return 1

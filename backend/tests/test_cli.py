@@ -547,6 +547,85 @@ class CliTest(unittest.TestCase):
             self.assertTrue(result["passed"])
             self.assertFalse(result["blocked"])
 
+    def test_validate_ai_output_accepts_rag_context_bundle_citation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "scan.json"
+            bundle_path = root / "bundle.json"
+            ai_output_path = root / "ai-output.json"
+            report_path.write_text(json.dumps(scan_report_fixture()), encoding="utf-8")
+            self.assertEqual(
+                main(
+                    [
+                        "ai-context-bundle",
+                        str(report_path),
+                        "--task-id",
+                        "task-archive-utils",
+                        "--include-rag",
+                        "--output",
+                        str(bundle_path),
+                    ]
+                ),
+                0,
+            )
+            bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+            request = bundle["ai_request"]
+            retrieved_evidence = [
+                item
+                for item in request["evidence"]
+                if item["metadata"].get("origin") == "retrieved_context"
+            ][0]
+            ai_output_path.write_text(
+                json.dumps(
+                    {
+                        "finding_id": request["finding_id"],
+                        "package_name": request["package_name"],
+                        "vulnerability_id": request["vulnerability_id"],
+                        "priority": request["priority"],
+                        "risk_score": request["risk_score"],
+                        "summary": "archive-utils is supported by retrieved Sage evidence.",
+                        "explanation": "The output cites retrieved evidence from the bundle.",
+                        "citations": [
+                            {
+                                "claim_id": "claim-1",
+                                "evidence_id": retrieved_evidence["id"],
+                            }
+                        ],
+                        "claim_checks": [
+                            {
+                                "claim_id": "claim-1",
+                                "claim": str(retrieved_evidence["content"]),
+                                "disposition": "fact",
+                                "evidence_ids": [retrieved_evidence["id"]],
+                            }
+                        ],
+                        "provider_name": "client-ai",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "validate-ai-output",
+                        str(report_path),
+                        str(ai_output_path),
+                        "--task-id",
+                        "task-archive-utils",
+                        "--include-rag",
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            result = json.loads(stdout.getvalue())
+            self.assertTrue(result["passed"])
+            self.assertFalse(result["blocked"])
+
     def test_ai_demo_runs_without_provider_api_key_and_writes_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

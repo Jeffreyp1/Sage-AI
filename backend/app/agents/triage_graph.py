@@ -17,6 +17,7 @@ from app.agents.state import (
     TriageWorkflowState,
     VulnerabilityTriageExplanation,
 )
+from app.services.ai_context_bundle import build_ai_context_bundle, validate_client_ai_output
 from app.services.ai_summary_service import AISummaryService
 from app.services.public_safety import sanitize_text
 from app.services.rag_types import EvidenceChunk
@@ -39,6 +40,7 @@ RISKY_REMEDIATION_ACTIONS = {
 }
 MAX_TRIAGE_EVIDENCE_CHUNKS = 50
 AI_SUMMARY_BLOCKED_REASON = "AI summary validation blocked citation verification."
+CLIENT_AI_VALIDATION_BLOCKED_REASON = "Client AI output validation blocked human approval."
 EVIDENCE_LIMIT_BLOCKED_REASON = "Evidence chunk limit exceeded."
 
 
@@ -80,6 +82,66 @@ class TriageGraph:
         self.citation_verification_node(state)
         self.human_approval_node(state, human_decision)
         return state
+
+    def run_with_client_ai(
+        self,
+        *,
+        remediation_task: Mapping[str, object],
+        evidence_chunks: Iterable[EvidenceChunk],
+        ai_output: Mapping[str, object],
+        human_decision: HumanApprovalDecision | None = None,
+    ) -> TriageWorkflowState:
+        bounded_chunks, evidence_limit_exceeded = bounded_evidence_chunks(evidence_chunks)
+        state = TriageWorkflowState(
+            remediation_task=dict(remediation_task),
+            evidence_chunks=[] if evidence_limit_exceeded else bounded_chunks,
+        )
+
+        if evidence_limit_exceeded:
+            self.evidence_limit_node(state)
+            return state
+
+        self.ai_context_bundle_node(state)
+        self.client_ai_validation_node(state, ai_output)
+        self.human_approval_node(state, human_decision)
+        return state
+
+    def ai_context_bundle_node(self, state: TriageWorkflowState) -> None:
+        bundle = build_ai_context_bundle(
+            state.remediation_task,
+            retrieved_chunks=state.evidence_chunks,
+        )
+        output = {
+            "finding_id": bundle.get("finding_id"),
+            "evidence_count": evidence_count(bundle),
+            "retrieved_chunk_ids": [chunk.chunk_id for chunk in state.evidence_chunks],
+        }
+        self.record_node(state, "ai_context_bundle", PASSED, output)
+
+    def client_ai_validation_node(
+        self,
+        state: TriageWorkflowState,
+        ai_output: Mapping[str, object],
+    ) -> None:
+        validation = validate_client_ai_output(
+            state.remediation_task,
+            ai_output,
+            retrieved_chunks=state.evidence_chunks,
+        )
+        blocked = validation.get("blocked") is True
+        if blocked:
+            state.status = BLOCKED
+            state.approved = False
+            state.blocked_reasons.append(CLIENT_AI_VALIDATION_BLOCKED_REASON)
+
+        status = BLOCKED if blocked else PASSED
+        output = {
+            "passed": validation.get("passed") is True,
+            "blocked": blocked,
+            "summary": validation.get("summary"),
+            "validation": mapping_to_dict(validation.get("validation")),
+        }
+        self.record_node(state, "client_ai_validation", status, output)
 
     def repo_context_node(self, state: TriageWorkflowState) -> None:
         package = mapping_value(state.remediation_task.get("package"))
@@ -313,6 +375,14 @@ def mapping_to_dict_or_none(value: object) -> dict[str, object] | None:
     if isinstance(value, Mapping):
         return dict(value)
     return None
+
+
+def evidence_count(bundle: Mapping[str, object]) -> int:
+    request = mapping_value(bundle.get("ai_request"))
+    evidence = request.get("evidence")
+    if isinstance(evidence, list):
+        return len(evidence)
+    return 0
 
 
 def public_human_decision_dict(

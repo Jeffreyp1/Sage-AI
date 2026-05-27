@@ -271,9 +271,19 @@ class McpToolHandlers:
         request = as_model(model, ValidateAIOutputInput)
         report = self._load_report(request.scan_id)
         finding = find_task(report, request.task_id)
+        report_payload = report.model_dump(mode="json")
+        finding_payload = finding.model_dump(mode="json")
+        retrieved_chunks: list[EvidenceChunk] = []
+        if request.include_rag:
+            retrieved_chunks = retrieved_chunks_for_task(
+                report_payload,
+                finding_payload,
+                top_k=request.top_k,
+            )
         result = validate_client_ai_output(
-            finding.model_dump(mode="json"),
+            finding_payload,
             request.ai_output,
+            retrieved_chunks=retrieved_chunks,
         )
         return ValidateAIOutputOutput(
             scan_id=report.scan_id,

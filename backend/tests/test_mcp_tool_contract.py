@@ -127,3 +127,21 @@ def test_ai_context_bundle_input_supports_optional_rag_retrieval():
     assert request.top_k == 3
     assert schema["properties"]["top_k"]["minimum"] == 1
     assert schema["properties"]["top_k"]["maximum"] == 10
+
+
+def test_validate_ai_output_input_supports_optional_rag_retrieval():
+    request = ValidateAIOutputInput.model_validate(
+        {
+            "scan_id": "scan-test",
+            "task_id": "task-archive-utils",
+            "ai_output": {},
+            "include_rag": True,
+            "top_k": 3,
+        }
+    )
+    schema = ValidateAIOutputInput.model_json_schema()
+
+    assert request.include_rag is True
+    assert request.top_k == 3
+    assert schema["properties"]["top_k"]["minimum"] == 1
+    assert schema["properties"]["top_k"]["maximum"] == 10

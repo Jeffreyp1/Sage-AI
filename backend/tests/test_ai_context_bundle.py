@@ -78,6 +78,55 @@ def test_validate_client_ai_output_accepts_cited_claims():
     assert result["validation"]["valid"] is True
 
 
+def test_validate_client_ai_output_accepts_retrieved_chunk_citations():
+    task = remediation_task_fixture()
+    chunks = [
+        EvidenceChunk(
+            chunk_id="source-upload-route",
+            source_type="source_file",
+            content="archive-utils is used by POST /receipts/upload.",
+            metadata={"source": "src/routes/receipts.ts", "package": "archive-utils"},
+        )
+    ]
+    bundle = build_ai_context_bundle(task, retrieved_chunks=chunks)
+    request = bundle["ai_request"]
+    retrieved_evidence = [
+        item
+        for item in request["evidence"]
+        if item["metadata"].get("origin") == "retrieved_context"
+    ][0]
+    output = {
+        "finding_id": request["finding_id"],
+        "package_name": request["package_name"],
+        "vulnerability_id": request["vulnerability_id"],
+        "priority": request["priority"],
+        "risk_score": request["risk_score"],
+        "summary": "archive-utils is used by the cited receipt upload route evidence.",
+        "explanation": "The cited retrieved evidence describes usage in POST /receipts/upload.",
+        "citations": [
+            {
+                "claim_id": "claim-1",
+                "evidence_id": retrieved_evidence["id"],
+                "note": "Supports retrieved route usage.",
+            }
+        ],
+        "claim_checks": [
+            {
+                "claim_id": "claim-1",
+                "claim": "archive-utils is used by POST /receipts/upload.",
+                "disposition": "fact",
+                "evidence_ids": [retrieved_evidence["id"]],
+            }
+        ],
+        "provider_name": "client-ai",
+    }
+
+    result = validate_client_ai_output(task, output, retrieved_chunks=chunks)
+
+    assert result["passed"] is True
+    assert result["blocked"] is False
+
+
 def test_validate_client_ai_output_blocks_uncited_claims():
     task = remediation_task_fixture()
     bundle = build_ai_context_bundle(task)

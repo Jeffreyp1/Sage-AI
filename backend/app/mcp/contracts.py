@@ -129,6 +129,11 @@ class ValidateAIOutputInput(ContractModel):
     scan_id: str = Field(max_length=MAX_INPUT_STRING_LENGTH)
     task_id: str = Field(max_length=MAX_INPUT_STRING_LENGTH)
     ai_output: dict[str, object]
+    include_rag: bool = Field(
+        default=False,
+        description="Validate against retrieved report evidence chunks too.",
+    )
+    top_k: int = Field(default=5, ge=1, le=10)
 
 
 class ValidateAIOutputOutput(ContractModel):

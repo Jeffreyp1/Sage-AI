@@ -44,9 +44,10 @@ def build_ai_context_bundle(
 def validate_client_ai_output(
     task: Mapping[str, object],
     ai_output: Mapping[str, object],
+    retrieved_chunks: Iterable[EvidenceChunk] = (),
 ) -> dict[str, object]:
     safe_task = mapping_value(sanitize_public_value(dict(task)))
-    request = build_finding_summary_request(safe_task, [])
+    request = build_finding_summary_request(safe_task, retrieved_chunks)
 
     try:
         response = parse_ai_output(ai_output)
