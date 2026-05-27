@@ -504,6 +504,69 @@ def test_triage_graph_client_ai_validation_failure_blocks_human_gate() -> None:
     assert "Client AI output validation blocked human approval." in state.blocked_reasons
 
 
+def test_triage_graph_client_ai_context_bundle_error_fails_closed(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    graph = TriageGraph()
+
+    def fail_to_build_bundle(*args, **kwargs):
+        raise RuntimeError("raw bundle failure with malicious payload details")
+
+    monkeypatch.setattr(triage_graph, "build_ai_context_bundle", fail_to_build_bundle)
+
+    state = graph.run_with_client_ai(
+        remediation_task=remediation_task(),
+        evidence_chunks=evidence_chunks(),
+        ai_output=cited_client_ai_output(remediation_task()),
+    )
+    public_text = repr(state.to_dict())
+
+    assert state.status == "blocked"
+    assert state.approved is False
+    assert state.node_results[0].node_name == "ai_context_bundle"
+    assert state.node_results[0].validation_status == "blocked"
+    assert state.human_approval is not None
+    assert state.human_approval.status == "blocked"
+    assert "Client AI orchestration failed closed." in state.blocked_reasons
+    assert "raw bundle failure" not in public_text
+    assert "malicious payload" not in public_text
+
+
+def test_triage_graph_client_ai_validation_error_fails_closed(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    graph = TriageGraph()
+
+    def fail_to_validate_output(*args, **kwargs):
+        raise RuntimeError("raw validation failure with malicious payload details")
+
+    monkeypatch.setattr(
+        triage_graph,
+        "validate_client_ai_output",
+        fail_to_validate_output,
+    )
+
+    state = graph.run_with_client_ai(
+        remediation_task=remediation_task(),
+        evidence_chunks=evidence_chunks(),
+        ai_output=cited_client_ai_output(remediation_task()),
+    )
+    node_statuses = {
+        result.node_name: result.validation_status for result in state.node_results
+    }
+    public_text = repr(state.to_dict())
+
+    assert state.status == "blocked"
+    assert state.approved is False
+    assert node_statuses["ai_context_bundle"] == "passed"
+    assert node_statuses["client_ai_validation"] == "blocked"
+    assert state.human_approval is not None
+    assert state.human_approval.status == "blocked"
+    assert "Client AI orchestration failed closed." in state.blocked_reasons
+    assert "raw validation failure" not in public_text
+    assert "malicious payload" not in public_text
+
+
 def test_node_traces_exist_and_show_ai_validation_failure() -> None:
     trace_service = TraceService()
     provider = MockAIProvider(

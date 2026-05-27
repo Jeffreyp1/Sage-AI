@@ -212,6 +212,40 @@ def test_validate_client_ai_output_blocks_unsafe_text_before_parse_errors():
     assert "finding_id" not in result["summary"]
 
 
+def test_validate_client_ai_output_blocks_unknown_fields_before_ignored_text():
+    task = remediation_task_fixture()
+    bundle = build_ai_context_bundle(task)
+    request = bundle["ai_request"]
+    evidence_id = request["evidence"][0]["id"]
+    output = {
+        "finding_id": request["finding_id"],
+        "package_name": request["package_name"],
+        "vulnerability_id": request["vulnerability_id"],
+        "priority": request["priority"],
+        "risk_score": request["risk_score"],
+        "summary": "archive-utils should be upgraded.",
+        "explanation": "The response uses only the provided evidence.",
+        "citations": [{"claim_id": "claim-1", "evidence_id": evidence_id}],
+        "claim_checks": [
+            {
+                "claim_id": "claim-1",
+                "claim": "archive-utils should be upgraded.",
+                "disposition": "fact",
+                "evidence_ids": [evidence_id],
+            }
+        ],
+        "provider_name": "client-ai",
+        "ignored_notes": "This includes exploit steps and a malicious payload.",
+    }
+
+    result = validate_client_ai_output(task, output)
+
+    assert result["passed"] is False
+    assert result["blocked"] is True
+    assert result["validation"]["errors"] == ["AI output contained unsupported fields."]
+    assert "exploit steps" not in repr(result)
+
+
 def remediation_task_fixture() -> dict[str, object]:
     return {
         "task_id": "task-archive-utils",

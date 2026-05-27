@@ -15,6 +15,19 @@ from app.services.rag_types import EvidenceChunk
 
 
 AI_CONTEXT_BUNDLE_SCHEMA_VERSION = "vulnsage.ai_context_bundle.v1"
+ALLOWED_AI_OUTPUT_FIELDS = {
+    "finding_id",
+    "package_name",
+    "vulnerability_id",
+    "priority",
+    "risk_score",
+    "summary",
+    "explanation",
+    "citations",
+    "claim_checks",
+    "provider_name",
+    "errors",
+}
 
 
 class AIOutputParseError(ValueError):
@@ -49,6 +62,10 @@ def validate_client_ai_output(
 ) -> dict[str, object]:
     safe_task = mapping_value(sanitize_public_value(dict(task)))
     request = build_finding_summary_request(safe_task, retrieved_chunks)
+    unknown_fields = unsupported_ai_output_fields(ai_output)
+    if len(unknown_fields) > 0:
+        return blocked_validation_result("AI output contained unsupported fields.")
+
     unsafe_markers = unsafe_client_output_markers(ai_output)
     if len(unsafe_markers) > 0:
         return blocked_validation_result("AI response contained unsafe text.")
@@ -105,6 +122,14 @@ def blocked_validation_result(message: str) -> dict[str, object]:
             "mutated_fields": [],
         },
     }
+
+
+def unsupported_ai_output_fields(value: Mapping[str, object]) -> list[str]:
+    fields: list[str] = []
+    for key in value:
+        if str(key) not in ALLOWED_AI_OUTPUT_FIELDS:
+            fields.append(str(key))
+    return fields
 
 
 def citation_rules() -> list[str]:

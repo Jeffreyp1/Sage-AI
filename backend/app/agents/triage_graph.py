@@ -41,6 +41,7 @@ RISKY_REMEDIATION_ACTIONS = {
 MAX_TRIAGE_EVIDENCE_CHUNKS = 50
 AI_SUMMARY_BLOCKED_REASON = "AI summary validation blocked citation verification."
 CLIENT_AI_VALIDATION_BLOCKED_REASON = "Client AI output validation blocked human approval."
+CLIENT_AI_ORCHESTRATION_ERROR_BLOCKED_REASON = "Client AI orchestration failed closed."
 EVIDENCE_LIMIT_BLOCKED_REASON = "Evidence chunk limit exceeded."
 
 
@@ -101,10 +102,52 @@ class TriageGraph:
             self.evidence_limit_node(state)
             return state
 
-        self.ai_context_bundle_node(state)
-        self.client_ai_validation_node(state, ai_output)
+        if not self.run_client_ai_node(state, "ai_context_bundle"):
+            self.human_approval_node(state, human_decision)
+            return state
+        if not self.run_client_ai_node(state, "client_ai_validation", ai_output):
+            self.human_approval_node(state, human_decision)
+            return state
+
         self.human_approval_node(state, human_decision)
         return state
+
+    def run_client_ai_node(
+        self,
+        state: TriageWorkflowState,
+        node_name: str,
+        ai_output: Mapping[str, object] | None = None,
+    ) -> bool:
+        try:
+            if node_name == "ai_context_bundle":
+                self.ai_context_bundle_node(state)
+                return True
+            if ai_output is None:
+                raise ValueError("client AI validation output is required")
+            self.client_ai_validation_node(state, ai_output)
+            return True
+        except Exception:
+            logger.warning("Client AI orchestration failed closed at %s.", node_name)
+            self.client_ai_error_node(state, node_name)
+            return False
+
+    def client_ai_error_node(
+        self,
+        state: TriageWorkflowState,
+        node_name: str,
+    ) -> None:
+        state.status = BLOCKED
+        state.approved = False
+        state.blocked_reasons.append(CLIENT_AI_ORCHESTRATION_ERROR_BLOCKED_REASON)
+        self.record_node(
+            state,
+            node_name,
+            BLOCKED,
+            {
+                "blocked": True,
+                "reason": CLIENT_AI_ORCHESTRATION_ERROR_BLOCKED_REASON,
+            },
+        )
 
     def ai_context_bundle_node(self, state: TriageWorkflowState) -> None:
         bundle = build_ai_context_bundle(

@@ -10,6 +10,10 @@ from app.cli import main
 from app.schemas.report import REPORT_SCHEMA_VERSION
 
 
+TOKEN_SENTINEL = "unit-test-token-value"
+PRIVATE_PATH_SENTINEL = "private-workspace/repo"
+
+
 class CliTest(unittest.TestCase):
     def test_cli_help_lists_all_commands(self):
         stdout = io.StringIO()
@@ -115,8 +119,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr.getvalue(), "")
         self.assertIn("OSV query failed for archive-utils@2.1.4", output)
-        self.assertNotIn("ghp_secret123", output)
-        self.assertNotIn("/Users/auditor/private", output)
+        self.assertNotIn(TOKEN_SENTINEL, output)
+        self.assertNotIn(PRIVATE_PATH_SENTINEL, output)
 
     def test_scan_malformed_manifest_returns_error_without_traceback(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -440,13 +444,13 @@ class CliTest(unittest.TestCase):
             report_path = root / "scan.json"
             output_path = root / "bundle.json"
             report = scan_report_fixture()
-            report["scan_id"] = "/Users/auditor/private/repo"
+            report["scan_id"] = PRIVATE_PATH_SENTINEL
             report["remediation_tasks"][0]["task_id"] = "secret.task-archive-utils"
             report["remediation_tasks"][0]["evidence"][0]["source"] = (
-                "/Users/auditor/private/repo/package-lock.json"
+                "%s/package-lock.json" % PRIVATE_PATH_SENTINEL
             )
             report["remediation_tasks"][0]["evidence"][0]["claim"] = (
-                "Proof-of-concept payload uses token=ghp_secret123."
+                "Proof-of-concept payload uses token=%s." % TOKEN_SENTINEL
             )
             report_path.write_text(json.dumps(report), encoding="utf-8")
 
@@ -468,9 +472,9 @@ class CliTest(unittest.TestCase):
             finding_payload = json.dumps(bundle["finding"]).lower()
             encoded = evidence_payload + finding_payload
             self.assertNotIn("/users/", encoded)
-            self.assertNotIn("private/repo", encoded)
+            self.assertNotIn(PRIVATE_PATH_SENTINEL, encoded)
             self.assertNotIn("secret.task", encoded)
-            self.assertNotIn("ghp_secret123", encoded)
+            self.assertNotIn(TOKEN_SENTINEL, encoded)
             self.assertNotIn("payload", encoded)
 
     def test_validate_ai_output_blocks_uncited_client_ai_response(self):
@@ -816,7 +820,7 @@ class CliTest(unittest.TestCase):
             root = Path(temp_dir)
             report_path = root / "scan.json"
             report = scan_report_fixture()
-            report["/Users/auditor/private-token"] = "value"
+            report["private-token-field"] = "value"
             report_path.write_text(json.dumps(report), encoding="utf-8")
             stdout = io.StringIO()
             stderr = io.StringIO()
@@ -828,7 +832,7 @@ class CliTest(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), "")
             error_text = stderr.getvalue()
             self.assertIn("Error: report does not match public schema:", error_text)
-            self.assertNotIn("/Users/auditor", error_text)
+            self.assertNotIn(PRIVATE_PATH_SENTINEL, error_text)
             self.assertNotIn("private-token", error_text)
             self.assertNotIn("Traceback", error_text)
 
@@ -1001,7 +1005,7 @@ class CliTest(unittest.TestCase):
             report_path = root / "scan.json"
             report = scan_report_fixture()
             task = report["remediation_tasks"][0]
-            task["task_id"] = "/Users/auditor/private-token/task"
+            task["task_id"] = "private-token/task"
             task["package"]["name"] = "private-token-package"
             task["vulnerability"]["canonical_id"] = "GHSA-secret-token"
             task["patch_plan"]["target_version"] = "2.2.0-secret"
@@ -1019,7 +1023,6 @@ class CliTest(unittest.TestCase):
             self.assertEqual(text_exit_code, 0)
             self.assertEqual(json_exit_code, 0)
             self.assertIn("[redacted", combined)
-            self.assertNotIn("/Users/auditor", combined)
             self.assertNotIn("private-token", combined)
             self.assertNotIn("GHSA-secret-token", combined)
             self.assertNotIn("2.2.0-secret", combined)
@@ -1114,7 +1117,8 @@ class RawErrorScanResult:
         "release_blockers": 0,
     }
     errors = [
-        "OSV query failed for archive-utils@2.1.4: token=ghp_secret123 from /Users/auditor/private/repo/package-lock.json"
+        "OSV query failed for archive-utils@2.1.4: token=%s from %s/package-lock.json"
+        % (TOKEN_SENTINEL, PRIVATE_PATH_SENTINEL)
     ]
 
     def to_dict(self):
