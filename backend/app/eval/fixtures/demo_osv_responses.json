@@ -1,0 +1,68 @@
+{
+  "archive-utils": [
+    {
+      "affected": [
+        {
+          "package": {
+            "ecosystem": "npm",
+            "name": "archive-utils"
+          },
+          "ranges": [
+            {
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.2.0"
+                }
+              ],
+              "type": "SEMVER"
+            }
+          ]
+        }
+      ],
+      "aliases": [
+        "CVE-2025-12345"
+      ],
+      "database_specific": {
+        "severity": "HIGH"
+      },
+      "id": "GHSA-runtime",
+      "summary": "Archive parsing vulnerability"
+    }
+  ],
+  "test-bundle-tool": [
+    {
+      "affected": [
+        {
+          "package": {
+            "ecosystem": "npm",
+            "name": "test-bundle-tool"
+          },
+          "ranges": [
+            {
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.0.0"
+                }
+              ],
+              "type": "SEMVER"
+            }
+          ]
+        }
+      ],
+      "aliases": [
+        "CVE-2025-99999"
+      ],
+      "database_specific": {
+        "severity": "CRITICAL"
+      },
+      "id": "GHSA-dev",
+      "summary": "Dev tooling vulnerability"
+    }
+  ]
+}
