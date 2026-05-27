@@ -56,7 +56,7 @@ def analyze_reachability(
     import_hits = find_imports(root, dependency.name)
     production_hits = [hit for hit in import_hits if is_production_source(hit["source"])]
     test_hits = [hit for hit in import_hits if not is_production_source(hit["source"])]
-    docker_hit = dependency.name in read_optional(root / "Dockerfile")
+    docker_hit = dependency.name in read_optional_repo_file(root, root / "Dockerfile")
 
     evidence = list(dependency.evidence)
     evidence.extend(import_hits)
@@ -176,7 +176,9 @@ def find_internal_references(root: Path, relative_source: str) -> List[Dict[str,
 
 def iter_source_files(root: Path) -> Iterable[Path]:
     for path in root.rglob("*"):
-        if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+        if path.suffix not in SOURCE_SUFFIXES:
+            continue
+        if safe_repo_file(root, path) is None:
             continue
         relative_parts = path.relative_to(root).parts
         if any(part in SKIP_DIRS for part in relative_parts):
@@ -207,6 +209,27 @@ def read_optional(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except OSError:
         return ""
+
+
+def read_optional_repo_file(root: Path, path: Path) -> str:
+    safe_path = safe_repo_file(root, path)
+    if safe_path is None:
+        return ""
+    return read_optional(safe_path)
+
+
+def safe_repo_file(root: Path, path: Path) -> Optional[Path]:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return None
+    if not resolved.is_file():
+        return None
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return path
 
 
 def trim_quote(value: str, limit: int = 180) -> str:

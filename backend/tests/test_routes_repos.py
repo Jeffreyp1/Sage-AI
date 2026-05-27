@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 import json
@@ -5,13 +6,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.main import create_app
 from app.db import Base
-from app.api.routes_repos import scan_github
-from app.models import Package, RemediationTask, Repo
-from app.schemas.scan import ScanGitHubRequest
+from app.api.routes_repos import get_repo, list_remediation_tasks, scan_github, scan_local
+from app.models import Package, PackageVulnerability, RemediationTask, Repo, Scan, Vulnerability
+from app.schemas.scan import ScanGitHubRequest, ScanLocalRequest
+from app.schemas.report import REPORT_SCHEMA_VERSION
 from app.services.dependency_parser import ParsedDependency
 from app.services.github_ingestion import GitHubCloneError
 from app.services.repo_ingestion import RepoProfile
@@ -42,8 +46,21 @@ class FakeScanResult:
 
     def to_dict(self):
         return {
+            "schema_version": REPORT_SCHEMA_VERSION,
             "repo_profile": self.repo_profile.to_dict(),
-            "summary": self.summary,
+            "summary": {
+                "complete": True,
+                "scan_status": "complete",
+                "packages": 0,
+                "raw_alerts": 0,
+                "deduped_remediation_tasks": 0,
+                "release_blockers": 0,
+                "recommended_sprint_fixes": 0,
+                "safe_to_defer": 0,
+                "needs_human_review": 0,
+                "error_count": 0,
+                "priority_counts": {},
+            },
             "remediation_tasks": [],
             "errors": self.errors,
         }
@@ -52,7 +69,7 @@ class FakeScanResult:
 class FakeScanService:
     scanned_path = None
 
-    def scan_local(self, repo_path: str):
+    def scan_local(self, repo_path: str, *, workspace_root=None):
         FakeScanService.scanned_path = repo_path
         return FakeScanResult(repo_path)
 
@@ -60,7 +77,7 @@ class FakeScanService:
 class FailingScanService:
     scanned_path = None
 
-    def scan_local(self, repo_path: str):
+    def scan_local(self, repo_path: str, *, workspace_root=None):
         FailingScanService.scanned_path = repo_path
         raise OSError("cannot read %s" % repo_path)
 
@@ -68,9 +85,38 @@ class FailingScanService:
 class VulnerableFakeScanService:
     scanned_path = None
 
-    def scan_local(self, repo_path: str):
+    def scan_local(self, repo_path: str, *, workspace_root=None):
         VulnerableFakeScanService.scanned_path = repo_path
         return vulnerable_scan_result(repo_path)
+
+
+class ResolvedLocalFakeScanService:
+    scanned_path = None
+
+    def scan_local(self, repo_path: str, *, workspace_root=None):
+        ResolvedLocalFakeScanService.scanned_path = repo_path
+        root = Path(workspace_root) / repo_path if workspace_root is not None else Path(repo_path)
+        return FakeScanResult(str(root.resolve()))
+
+
+class RawErrorFakeScanService:
+    scanned_path = None
+
+    def scan_local(self, repo_path: str, *, workspace_root=None):
+        RawErrorFakeScanService.scanned_path = repo_path
+        result = vulnerable_scan_result(repo_path)
+        result.errors = [
+            "OSV query failed for archive-utils@2.1.4: GET https://api.osv.dev?token=ghp_secret123 failed while reading /Users/auditor/private/repo/package-lock.json"
+        ]
+        result.summary["complete"] = False
+        result.summary["scan_status"] = "incomplete"
+        result.summary["error_count"] = 1
+        return result
+
+
+class ApiSettings:
+    def __init__(self, local_scan_workspace_root: str) -> None:
+        self.local_scan_workspace_root = local_scan_workspace_root
 
 
 class RepoRoutesTest(unittest.TestCase):
@@ -78,6 +124,50 @@ class RepoRoutesTest(unittest.TestCase):
         FakeScanService.scanned_path = None
         FailingScanService.scanned_path = None
         VulnerableFakeScanService.scanned_path = None
+        ResolvedLocalFakeScanService.scanned_path = None
+        RawErrorFakeScanService.scanned_path = None
+
+    def test_request_validation_error_does_not_echo_raw_input(self):
+        handler = create_app().exception_handlers[RequestValidationError]
+        response = asyncio.run(
+            handler(
+                None,
+                RequestValidationError(
+                    [
+                        {
+                            "type": "string_type",
+                            "loc": ("body", "path"),
+                            "msg": "Input should be a valid string",
+                            "input": {
+                                "root": "/Users/auditor/private/repo",
+                                "token": "ghp_secret1234567890abcdef",
+                            },
+                        },
+                        {
+                            "type": "bool_parsing",
+                            "loc": ("body", "persist"),
+                            "msg": "Input should be a valid boolean",
+                            "input": "definitely",
+                        },
+                        {
+                            "type": "extra_forbidden",
+                            "loc": ("body", "unexpected"),
+                            "msg": "Extra inputs are not permitted",
+                            "input": "sk_live_51SecretTokenLikeValue",
+                        },
+                    ]
+                ),
+            )
+        )
+
+        self.assertEqual(response.status_code, 422)
+        body = json.loads(response.body)
+        serialized = json.dumps(body, sort_keys=True)
+        self.assertIn("detail", body)
+        self.assertNotIn("input", serialized)
+        self.assertNotIn("/Users/auditor/private/repo", serialized)
+        self.assertNotIn("ghp_secret1234567890abcdef", serialized)
+        self.assertNotIn("sk_live_51SecretTokenLikeValue", serialized)
 
     def test_scan_github_rejects_invalid_url(self):
         request = ScanGitHubRequest(url="git@github.com:acme/widget.git", persist=False)
@@ -123,11 +213,11 @@ class RepoRoutesTest(unittest.TestCase):
                 )
 
             profile = response.repo_profile
-            self.assertEqual(profile["provider"], "github")
-            self.assertEqual(profile["repo_name"], "widget")
-            self.assertEqual(profile["full_name"], "acme/widget")
-            self.assertEqual(profile["remote_url"], "https://github.com/acme/widget.git")
-            self.assertEqual(profile["root_path"], "https://github.com/acme/widget.git")
+            self.assertEqual(profile.provider, "github")
+            self.assertEqual(profile.repo_name, "widget")
+            self.assertEqual(profile.full_name, "acme/widget")
+            self.assertEqual(profile.remote_url, "https://github.com/acme/widget.git")
+            self.assertEqual(profile.root_path, "https://github.com/acme/widget.git")
             self.assertNotIn(str(Path(temp_dir).resolve()), str(profile))
 
     def test_scan_github_persists_owner_scoped_identity_for_same_repo_name(self):
@@ -184,8 +274,11 @@ class RepoRoutesTest(unittest.TestCase):
                     db=db,
                 )
 
-        self.assertEqual(response.remediation_tasks[0]["repo"], "local/foo")
-        self.assertNotIn(temp_root, json.dumps(response.remediation_tasks, sort_keys=True))
+        self.assertEqual(response.remediation_tasks[0].repo, "local/foo")
+        response_tasks = [
+            task.model_dump(mode="json") for task in response.remediation_tasks
+        ]
+        self.assertNotIn(temp_root, json.dumps(response_tasks, sort_keys=True))
 
         repo = db.query(Repo).one()
         package = db.query(Package).one()
@@ -248,6 +341,156 @@ class RepoRoutesTest(unittest.TestCase):
         self.assertEqual(log_call.kwargs["extra"]["error_type"], "OSError")
         self.assertNotIn(str(Path(temp_dir).resolve()), str(log_call))
 
+    def test_scan_local_malformed_manifest_error_does_not_leak_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            repo_path = root / "repo"
+            repo_path.mkdir()
+            (repo_path / "package.json").write_text("{not-json", encoding="utf-8")
+
+            with (
+                patch(
+                    "app.api.routes_repos.get_settings",
+                    return_value=ApiSettings(str(root)),
+                ),
+                self.assertRaises(HTTPException) as caught,
+            ):
+                scan_local(ScanLocalRequest(path="repo", persist=False), db=None)
+
+        self.assertEqual(caught.exception.status_code, 400)
+        detail = str(caught.exception.detail)
+        self.assertIn("Invalid JSON", detail)
+        self.assertNotIn(str(root), detail)
+        self.assertNotIn("package.json", detail)
+
+    def test_scan_local_persist_then_get_repo_does_not_return_local_root_as_remote_url(self):
+        db = make_session()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir).resolve()
+            repo_path = root / "secret-repo"
+            repo_path.mkdir()
+
+            with (
+                patch(
+                    "app.api.routes_repos.get_settings",
+                    return_value=ApiSettings(str(root)),
+                ),
+                patch(
+                    "app.api.routes_repos.ScanService",
+                    return_value=ResolvedLocalFakeScanService(),
+                ),
+            ):
+                response = scan_local(
+                    ScanLocalRequest(path="secret-repo", persist=True),
+                    db=db,
+                )
+
+        self.assertIsNotNone(response.persisted_scan_id)
+        scan = db.query(Scan).one()
+        repo = get_repo(scan.repo_id, db=db)
+        serialized = json.dumps(repo, sort_keys=True)
+        self.assertIsNone(repo["remote_url"])
+        self.assertNotIn(str(root), serialized)
+
+    def test_list_remediation_tasks_sanitizes_public_db_fields(self):
+        db = make_session()
+        repo = Repo(
+            id="repo-route",
+            name="payments-api",
+            full_name="local/payments-api",
+            provider="local",
+        )
+        package = Package(
+            id="package-route",
+            repo_id=repo.id,
+            name="archive-utils",
+            ecosystem="npm",
+            current_version="2.1.4",
+            dependency_type="dependencies",
+            is_direct=True,
+        )
+        vulnerability = Vulnerability(
+            id="vulnerability-route",
+            canonical_id="CVE-2026-1234",
+            summary="Archive issue.",
+            severity="HIGH",
+            raw_json={},
+        )
+        package_vulnerability = PackageVulnerability(
+            id="package-vulnerability-route",
+            package_id=package.id,
+            vulnerability_id=vulnerability.id,
+            affected_version="2.1.4",
+            fixed_versions_json=["2.2.0"],
+            is_affected=True,
+        )
+        task = RemediationTask(
+            id="task-route",
+            repo_id=repo.id,
+            package_vulnerability_id=package_vulnerability.id,
+            priority="P1_FIX_THIS_SPRINT",
+            risk_score=99,
+            status="open",
+            owner="private-token-package",
+            recommended_action="upgrade token=secret-value",
+            patch_plan_json={
+                "steps": ["Edit /Users/auditor/private/repo/package.json"],
+                "GHSA-secret-token": "private-token-package",
+            },
+            test_plan_json=["run /Users/auditor/private/repo/test.sh"],
+            rollback_plan_json=["restore password=hunter2"],
+            citations_json=[
+                {
+                    "source": "/Users/auditor/private/repo/src/archive.py",
+                    "claim": "GHSA-secret-token",
+                }
+            ],
+        )
+        db.add_all([repo, package, vulnerability, package_vulnerability, task])
+        db.commit()
+
+        result = list_remediation_tasks(repo.id, db)
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertIn("[redacted", serialized)
+        self.assertNotIn("private-token-package", serialized)
+        self.assertNotIn("GHSA-secret-token", serialized)
+        self.assertNotIn("/Users/auditor/private/repo", serialized)
+        self.assertNotIn("token=secret-value", serialized)
+        self.assertNotIn("password=hunter2", serialized)
+
+    def test_scan_local_response_does_not_return_raw_osv_error_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir).resolve()
+            repo_path = root / "repo"
+            repo_path.mkdir()
+
+            with (
+                patch(
+                    "app.api.routes_repos.get_settings",
+                    return_value=ApiSettings(str(root)),
+                ),
+                patch(
+                    "app.api.routes_repos.ScanService",
+                    return_value=RawErrorFakeScanService(),
+                ),
+            ):
+                response = scan_local(
+                    ScanLocalRequest(path="repo", persist=False),
+                    db=None,
+                )
+
+        serialized = json.dumps(response.model_dump(mode="json"), sort_keys=True)
+        self.assertEqual(
+            response.errors,
+            [
+                "OSV query failed for archive-utils@2.1.4; vulnerability data may be incomplete."
+            ],
+        )
+        self.assertNotIn("ghp_secret123", serialized)
+        self.assertNotIn("/Users/auditor/private/repo", serialized)
+
 
 def make_session():
     engine = create_engine("sqlite:///:memory:")
@@ -308,8 +551,6 @@ def vulnerable_scan_result(repo_path: str) -> ScanResult:
             "dependency_type": "dependencies",
             "is_direct": True,
             "parent_package": None,
-            "manifest_path": str(root / "package.json"),
-            "lockfile_path": str(root / "package-lock.json"),
         },
         vulnerability={
             "canonical_id": "CVE-2026-1234",
@@ -327,7 +568,7 @@ def vulnerable_scan_result(repo_path: str) -> ScanResult:
             "runtime_scope": "runtime",
             "reachability": "reachable",
             "confidence": 0.9,
-            "factors": ["direct dependency"],
+            "factors": {"direct_dependency_score": 1.0},
             "rationale": ["High severity reachable runtime dependency."],
         },
         evidence=[
@@ -340,8 +581,6 @@ def vulnerable_scan_result(repo_path: str) -> ScanResult:
         patch_plan={
             "recommended_action": "upgrade",
             "target_version": "2.2.0",
-            "manifest_path": str(root / "package.json"),
-            "lockfile_path": str(root / "package-lock.json"),
             "steps": ["Upgrade %s." % (root / "package.json")],
             "test_plan": ["npm test"],
             "rollback_plan": ["Revert %s." % (root / "package-lock.json")],
@@ -367,9 +606,16 @@ def vulnerable_scan_result(repo_path: str) -> ScanResult:
         vulnerabilities=[vulnerability],
         remediation_tasks=[task],
         summary={
+            "complete": True,
             "packages": 1,
             "raw_alerts": 1,
             "deduped_remediation_tasks": 1,
+            "release_blockers": 0,
+            "recommended_sprint_fixes": 1,
+            "safe_to_defer": 0,
+            "needs_human_review": 0,
+            "error_count": 0,
+            "priority_counts": {"P1_FIX_THIS_SPRINT": 1},
             "scan_status": "complete",
         },
         errors=[],

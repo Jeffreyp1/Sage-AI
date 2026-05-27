@@ -12,7 +12,14 @@ import re
 import sys
 from typing import Optional
 
-from app.services.public_safety import UNSAFE_PUBLIC_PATTERN
+from pydantic import ValidationError
+
+from app.schemas.report import ScanReport
+from app.services.public_safety import (
+    contains_public_leak_text,
+    safe_display_name,
+    sanitize_public_identifier,
+)
 
 
 FORBIDDEN_PUBLIC_KEYS = {"raw", "details"}
@@ -57,6 +64,18 @@ def validate_report(report: object) -> dict[str, object]:
             )
         )
         return build_result(findings)
+
+    try:
+        report = ScanReport.model_validate(report).model_dump(mode="json")
+    except ValidationError:
+        findings.append(
+            ValidationFinding(
+                severity="critical",
+                code="invalid_report_schema",
+                message="Report does not match public schema",
+                path="$",
+            )
+        )
 
     findings.extend(forbidden_key_findings(report))
     findings.extend(unsafe_public_text_findings(report))
@@ -149,15 +168,10 @@ def duplicate_task_findings(tasks: TaskList) -> list[ValidationFinding]:
                 severity="critical",
                 code="duplicate_task",
                 message=(
-                    "Duplicate remediation task for %s@%s %s; first occurrence is "
+                    "Duplicate remediation task; first occurrence is "
                     "remediation_tasks[%s]"
                 )
-                % (
-                    package_name,
-                    current_version,
-                    duplicate_task_display_identity(task, identities),
-                    duplicate_index,
-                ),
+                % duplicate_index,
                 path="remediation_tasks[%s]" % index,
             )
         )
@@ -197,8 +211,7 @@ def task_quality_findings(task: Mapping[object, object], index: int) -> list[Val
             ValidationFinding(
                 severity="critical",
                 code="downgrade_patch_target",
-                message="Patch target %s is older than current version %s"
-                % (target_version, current_version),
+                message="Patch target is older than current version",
                 path="%s.patch_plan.target_version" % path,
             )
         )
@@ -243,7 +256,7 @@ def non_review_patch_target_findings(
             ValidationFinding(
                 severity="critical",
                 code="invalid_patch_target_version",
-                message="Patch target %s is not a valid semantic version" % target_version,
+                message="Patch target is not a valid semantic version",
                 path=target_path,
             )
         ]
@@ -258,7 +271,7 @@ def forbidden_key_findings(report: Mapping[object, object]) -> list[ValidationFi
             ValidationFinding(
                 severity="critical",
                 code="forbidden_public_key",
-                message="Public report contains forbidden key %s" % key,
+                message="Public report contains a forbidden key",
                 path=path,
             )
         )
@@ -273,7 +286,8 @@ def forbidden_key_paths(
     if isinstance(value, Mapping):
         for key, child in value.items():
             key_text = str(key)
-            child_path = "%s.%s" % (path, key_text) if path else key_text
+            path_part = public_path_part(key_text)
+            child_path = "%s.%s" % (path, path_part) if path else path_part
             if key_text.lower() in forbidden_keys:
                 yield child_path, key_text
             yield from forbidden_key_paths(child, forbidden_keys, child_path)
@@ -287,18 +301,34 @@ def forbidden_key_paths(
 def unsafe_public_text_findings(report: Mapping[object, object]) -> list[ValidationFinding]:
     findings: list[ValidationFinding] = []
     for path, value in walk_strings_with_paths(report):
-        match = UNSAFE_PUBLIC_PATTERN.search(value)
-        if match is None:
+        if is_safe_public_identifier_path(path, value):
+            continue
+        if not contains_public_leak_text(value):
             continue
         findings.append(
             ValidationFinding(
                 severity="critical",
                 code="unsafe_public_text",
-                message="Public report contains unsafe text marker %s" % match.group(0),
+                message="Public report contains unsafe text marker",
                 path=path,
             )
         )
     return findings
+
+
+def is_safe_public_identifier_path(path: str, value: str) -> bool:
+    normalized_path = re.sub(r"\[\d+\]", "[]", path)
+    if normalized_path.endswith(".package.name"):
+        return sanitize_public_identifier(value) == value
+    if normalized_path == "packages[].name":
+        return sanitize_public_identifier(value) == value
+    if normalized_path.endswith(".package_name"):
+        return sanitize_public_identifier(value) == value
+    if normalized_path.endswith(".vulnerability.package"):
+        return sanitize_public_identifier(value) == value
+    if normalized_path == "vulnerabilities[].package":
+        return sanitize_public_identifier(value) == value
+    return False
 
 
 def unsupported_claim_findings(report: Mapping[object, object]) -> list[ValidationFinding]:
@@ -315,7 +345,7 @@ def unsupported_claim_findings(report: Mapping[object, object]) -> list[Validati
                     ValidationFinding(
                         severity="high",
                         code="unsupported_claim_marker",
-                        message="Public report contains unsupported claim marker %s" % marker,
+                        message="Public report contains unsupported claim marker",
                         path=path,
                     )
                 )
@@ -400,13 +430,22 @@ def walk_strings_with_paths(value: object, path: str = "") -> Iterable[tuple[str
     if isinstance(value, Mapping):
         for key, child in value.items():
             key_text = str(key)
-            child_path = "%s.%s" % (path, key_text) if path else key_text
+            key_path = "%s.<key>" % path if path else "<key>"
+            yield key_path, key_text
+            path_part = public_path_part(key_text)
+            child_path = "%s.%s" % (path, path_part) if path else path_part
             yield from walk_strings_with_paths(child, child_path)
         return
     if isinstance(value, list):
         for index, child in enumerate(value):
             child_path = "%s[%s]" % (path, index)
             yield from walk_strings_with_paths(child, child_path)
+
+
+def public_path_part(value: str) -> str:
+    if contains_public_leak_text(value):
+        return "<key>"
+    return value
 
 
 def is_downgrade(current_version: Optional[str], target_version: Optional[str]) -> bool:
@@ -532,31 +571,36 @@ def string_at(data: Mapping[object, object], path: str) -> Optional[str]:
 
 
 def validate_json_file(path: Path) -> dict[str, object]:
+    public_path = public_report_path(path)
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError):
         return build_result(
             [
                 ValidationFinding(
                     severity="critical",
                     code="read_error",
-                    message=str(exc),
-                    path=str(path),
+                    message="Report file could not be read",
+                    path=public_path,
                 )
             ]
         )
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
         return build_result(
             [
                 ValidationFinding(
                     severity="critical",
                     code="invalid_json",
-                    message=str(exc),
-                    path=str(path),
+                    message="Report file is not valid JSON",
+                    path=public_path,
                 )
             ]
         )
     return validate_report(report)
+
+
+def public_report_path(path: Path) -> str:
+    return safe_display_name(path.name, fallback="report file")
 
 
 def main(argv: Optional[list[str]] = None) -> int:

@@ -12,7 +12,12 @@ from app.models import (
     PackageVulnerability,
     RemediationTask,
 )
-from app.services.public_safety import sanitize_public_value, sanitize_text
+from app.services.public_safety import (
+    sanitize_public_identifier,
+    sanitize_public_text,
+    sanitize_public_value,
+    sanitize_text,
+)
 
 
 APPROVED_STATUS = "approved"
@@ -231,7 +236,7 @@ def serialize_task(db: Session, task: RemediationTask) -> dict:
         "repo_id": public_text(task.repo_id),
         "repo": public_text(task.repo.full_name),
         "package": {
-            "name": public_text(package.name),
+            "name": public_identifier_text(package.name),
             "ecosystem": public_text(package.ecosystem),
             "current_version": public_text(package.current_version),
             "dependency_type": public_text(package.dependency_type),
@@ -257,9 +262,9 @@ def serialize_task(db: Session, task: RemediationTask) -> dict:
                 "id": public_text(approval.id),
                 "action_type": public_text(approval.action_type),
                 "status": public_text(approval.status),
-                "requested_by": approval_text(approval.requested_by),
-                "approved_by": approval_text(approval.approved_by),
-                "decision_reason": approval_text(approval.decision_reason),
+                "requested_by": public_text(approval.requested_by),
+                "approved_by": public_text(approval.approved_by),
+                "decision_reason": public_text(approval.decision_reason),
                 "created_at": public_text(approval.created_at.isoformat()),
             }
             for approval in approvals
@@ -276,14 +281,21 @@ def approval_text(value: str | None) -> str | None:
 def public_text(value: str | None) -> str | None:
     if value is None:
         return None
-    return sanitize_text(value)
+    return sanitize_public_text(value)
+
+
+def public_identifier_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return sanitize_public_identifier(value)
 
 
 def draft_title(task: RemediationTask) -> str:
     package = task.package_vulnerability.package
     vulnerability = task.package_vulnerability.vulnerability
     return sanitize_text(
-        "Remediate %s in %s" % (vulnerability.canonical_id, package.name)
+        "Remediate %s in %s"
+        % (safe_text(vulnerability.canonical_id), safe_text(package.name))
     )
 
 
@@ -369,4 +381,4 @@ def safe_fixed_versions(package_vulnerability: PackageVulnerability) -> str:
 
 
 def safe_text(value: str) -> str:
-    return sanitize_text(value)
+    return sanitize_public_text(value)

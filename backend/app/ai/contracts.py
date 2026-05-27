@@ -327,6 +327,15 @@ def validate_finding_summary_response(
         if citation.claim_id not in claim_ids:
             errors.append("Citation references unknown claim id %s." % citation.claim_id)
 
+    citation_pairs = {
+        (citation.claim_id, citation.evidence_id)
+        for citation in citations
+        if isinstance(citation.claim_id, str)
+        and isinstance(citation.evidence_id, str)
+        and citation.claim_id in claim_ids
+        and citation.evidence_id in evidence_ids
+    }
+
     for claim in claim_checks:
         claim_id_is_string = isinstance(claim.claim_id, str)
         if not claim_id_is_string:
@@ -362,6 +371,19 @@ def validate_finding_summary_response(
             if claim_id_is_string:
                 unsupported_claim_ids.append(claim.claim_id)
             errors.append("Claim %s has no supporting evidence." % claim.claim_id)
+            continue
+
+        if claim.disposition in {"fact", "inference"} and claim_id_is_string:
+            for evidence_id in claim_evidence_ids:
+                if evidence_id not in evidence_ids:
+                    continue
+                if (claim.claim_id, evidence_id) in citation_pairs:
+                    continue
+                unsupported_claim_ids.append(claim.claim_id)
+                errors.append(
+                    "Claim %s evidence id %s has no matching citation."
+                    % (claim.claim_id, evidence_id)
+                )
 
     if not request.safety_constraints.allow_exploit_steps:
         unsafe_markers = unsafe_response_markers(response)

@@ -63,7 +63,10 @@ def run_case(case: dict[str, object]) -> dict[str, object]:
         if not isinstance(responses, dict):
             responses = {}
         client = FixtureOsvClient(responses=responses)
-        report = ScanService(osv_client=client).scan_local(str(repo_path)).to_dict()
+        report = ScanService(osv_client=client).scan_local(
+            str(repo_path),
+            workspace_root=repo_path.parent,
+        ).to_dict()
     result = verify_report(case=case, report=report)
     query_findings = verify_query_inputs(case=case, actual_queries=client.queries)
     if query_findings:

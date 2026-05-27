@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 vulnsage = "app.cli:main"
+vulnsage-mcp = "app.mcp.stdio_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

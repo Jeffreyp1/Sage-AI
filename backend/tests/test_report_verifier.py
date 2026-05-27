@@ -122,6 +122,54 @@ class ReportVerifierTest(unittest.TestCase):
 
         self.assertFalse(result["passed"])
         self.assertIn("unsafe_string", {finding["code"] for finding in result["findings"]})
+        messages = " ".join(finding["message"] for finding in result["findings"])
+        self.assertNotIn("PoC uses malicious payload", messages)
+        self.assertIn("unsafe marker", messages)
+
+    def test_fails_local_path_variants_without_echoing_raw_values(self):
+        task = clean_task()
+        local_values = [
+            "file:///Users/auditor/private/repo/package-lock.json",
+            "https://scanner.local/report?path=/repos/private/payments/package.json",
+            "C:/Users/auditor/private/repo/package-lock.json",
+        ]
+        task["evidence"].extend(
+            {"type": "reference", "source": value} for value in local_values
+        )
+        case = {
+            "case_id": "local_path_leak",
+            "expected_findings": [{"package": "archive-utils", "canonical_id": "CVE-2025-12345"}],
+        }
+
+        result = verify_report(case=case, report={"remediation_tasks": [task]})
+
+        messages = " ".join(finding["message"] for finding in result["findings"])
+        self.assertFalse(result["passed"])
+        self.assertIn("unsafe_string", {finding["code"] for finding in result["findings"]})
+        self.assertIn("local_path", messages)
+        self.assertIn("remediation_tasks[0].evidence", messages)
+        for value in local_values:
+            self.assertNotIn(value, messages)
+
+    def test_allows_token_named_packages(self):
+        case = {
+            "case_id": "token_named_packages",
+            "expected_findings": [
+                {"package": "jsonwebtoken", "canonical_id": "CVE-2025-12345"},
+                {"package": "csrf-token", "canonical_id": "CVE-2025-12345"},
+            ],
+            "allow_extra_findings": True,
+        }
+        report = {
+            "remediation_tasks": [
+                clean_task(package_name="jsonwebtoken"),
+                clean_task(package_name="csrf-token"),
+            ]
+        }
+
+        result = verify_report(case=case, report=report)
+
+        self.assertTrue(result["passed"])
 
     def test_fails_unsupported_claim_marker(self):
         task = clean_task()

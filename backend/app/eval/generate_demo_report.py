@@ -8,6 +8,7 @@ from typing import Optional
 
 from app.eval.report_validator import validate_report
 from app.eval.run_eval import FixtureOsvClient
+from app.services.public_safety import safe_display_name
 from app.services.scan_service import ScanService
 
 
@@ -53,18 +54,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             json.dumps(report, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    except OSError as error:
-        print(
-            "Error: unable to write demo report: %s: %s" % (output_path, error),
-            file=sys.stderr,
-        )
+    except OSError:
+        print("Error: unable to write demo report", file=sys.stderr)
         return 1
     return 0
 
 
 def generate_report(repo_path: Path, fixture_path: Path = DEFAULT_FIXTURE_PATH) -> dict[str, object]:
     responses = load_fixture_responses(fixture_path)
-    report = ScanService(osv_client=FixtureOsvClient(responses)).scan_local(str(repo_path)).to_dict()
+    report = ScanService(osv_client=FixtureOsvClient(responses)).scan_local(
+        str(repo_path),
+        workspace_root=repo_path.parent,
+    ).to_dict()
     return canonicalize_demo_report(report)
 
 
@@ -72,16 +73,19 @@ def load_fixture_responses(path: Path) -> dict[str, list[dict[str, object]]]:
     try:
         raw_data = path.read_text(encoding="utf-8")
     except FileNotFoundError as error:
-        raise ValueError("fixture file not found: %s" % path) from error
+        raise ValueError("fixture file not found: %s" % public_path_name(path)) from error
     except OSError as error:
-        raise ValueError("fixture file could not be read: %s: %s" % (path, error)) from error
+        raise ValueError(
+            "fixture file could not be read: %s: %s"
+            % (public_path_name(path), error.strerror or "read failed")
+        ) from error
 
     try:
         data = json.loads(raw_data)
     except json.JSONDecodeError as error:
         raise ValueError(
             "invalid fixture JSON: %s: %s at line %d column %d"
-            % (path, error.msg, error.lineno, error.colno)
+            % (public_path_name(path), error.msg, error.lineno, error.colno)
         ) from error
 
     if not isinstance(data, dict):
@@ -104,6 +108,10 @@ def load_fixture_responses(path: Path) -> dict[str, list[dict[str, object]]]:
             package_vulnerabilities.append(vulnerability)
         responses[package_name] = package_vulnerabilities
     return responses
+
+
+def public_path_name(path: Path) -> str:
+    return safe_display_name(path.name, fallback="file")
 
 
 def canonicalize_demo_report(report: dict[str, object]) -> dict[str, object]:

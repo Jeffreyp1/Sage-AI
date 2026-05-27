@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -81,6 +83,24 @@ def test_persist_scan_result_stores_scan_graph():
     assert task.owner == "@payments"
     assert task.recommended_action == "upgrade"
     assert result.remediation_tasks[0].task_id == task.id
+
+
+def test_persist_scan_result_stores_repo_relative_package_paths_for_local_scans():
+    db = make_session()
+    result = deterministic_scan_result()
+
+    persist_scan_result(db, result)
+
+    packages = db.query(Package).order_by(Package.name.asc()).all()
+
+    assert [(package.name, package.manifest_path, package.lockfile_path) for package in packages] == [
+        ("archive-utils", "package.json", "package-lock.json"),
+        ("safe-helper", None, "package-lock.json"),
+    ]
+    for package in packages:
+        for stored_path in (package.manifest_path, package.lockfile_path):
+            if stored_path is not None:
+                assert not Path(stored_path).is_absolute()
 
 
 def test_persisting_same_result_twice_is_idempotent_for_current_records():

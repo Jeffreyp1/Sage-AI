@@ -24,19 +24,19 @@ class RepoProfile:
 
 def profile_repo(repo_path: str) -> RepoProfile:
     root = Path(repo_path).resolve()
-    package_json_path = root / "package.json"
+    package_json_path = safe_repo_file(root, root / "package.json")
     dependency_files = []
     lockfiles = []
     package_managers = []
     languages = []
     test_commands = []
 
-    if package_json_path.exists():
+    if package_json_path is not None:
         dependency_files.append("package.json")
         package_managers.append("npm")
         languages.extend(detect_node_languages(root))
         test_commands.extend(detect_npm_test_commands(package_json_path))
-    if (root / "package-lock.json").exists():
+    if safe_repo_file(root, root / "package-lock.json") is not None:
         lockfiles.append("package-lock.json")
 
     service_type = infer_service_type(root)
@@ -56,7 +56,11 @@ def profile_repo(repo_path: str) -> RepoProfile:
 
 
 def detect_node_languages(root: Path) -> List[str]:
-    extensions = {path.suffix for path in root.rglob("*") if path.is_file()}
+    extensions = {
+        path.suffix
+        for path in root.rglob("*")
+        if safe_repo_file(root, path) is not None
+    }
     languages = []
     if ".ts" in extensions or ".tsx" in extensions:
         languages.append("TypeScript")
@@ -83,11 +87,14 @@ def detect_npm_test_commands(package_json_path: Path) -> List[str]:
 
 
 def infer_service_type(root: Path) -> str:
-    if (root / "Dockerfile").exists() and (root / "src" / "routes").exists():
+    has_dockerfile = safe_repo_file(root, root / "Dockerfile") is not None
+    has_routes = safe_repo_dir(root, root / "src" / "routes") is not None
+    has_workers = safe_repo_dir(root, root / "src" / "workers") is not None
+    if has_dockerfile and has_routes:
         return "backend_api"
-    if (root / "src" / "routes").exists():
+    if has_routes:
         return "api"
-    if (root / "src" / "workers").exists():
+    if has_workers:
         return "worker"
     return "unknown"
 
@@ -99,7 +106,7 @@ def parse_codeowners(root: Path) -> Dict[str, str]:
         root / "docs" / "CODEOWNERS",
     ]
     for path in candidates:
-        if path.exists():
+        if safe_repo_file(root, path) is not None:
             return _parse_codeowners_file(path)
     return {}
 
@@ -117,6 +124,34 @@ def _parse_codeowners_file(path: Path) -> Dict[str, str]:
     return owners
 
 
+def safe_repo_file(root: Path, path: Path) -> Optional[Path]:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return None
+    if not resolved.is_file():
+        return None
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return path
+
+
+def safe_repo_dir(root: Path, path: Path) -> Optional[Path]:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return None
+    if not resolved.is_dir():
+        return None
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return path
+
+
 def owner_for_path(codeowners: Dict[str, str], file_path: Optional[str]) -> Optional[str]:
     if not file_path:
         return None
@@ -129,4 +164,3 @@ def owner_for_path(codeowners: Dict[str, str], file_path: Optional[str]) -> Opti
     if not matches:
         return None
     return sorted(matches, reverse=True)[0][1]
-

@@ -4,6 +4,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Optional, Tuple
 
+from app.services.public_safety import LOCAL_PATH_PATTERN
+
 
 DEFAULT_FORBIDDEN_KEYS = {"raw", "details"}
 DEFAULT_FORBIDDEN_STRINGS = {
@@ -287,12 +289,14 @@ def unsafe_output_findings(
             )
         )
 
-    for path, value, marker in find_forbidden_string_values(report, forbidden_strings):
+    for path, _value, marker in find_forbidden_string_values(
+        report, forbidden_strings, include_local_paths=True
+    ):
         findings.append(
             VerifierFinding(
                 severity="critical",
                 code="unsafe_string",
-                message="Public report contains forbidden marker %s in %s" % (marker, value[:80]),
+                message="Public report contains unsafe marker %s at %s" % (marker, path),
                 path=path,
             )
         )
@@ -308,12 +312,12 @@ def unsupported_claim_findings(
         markers = {"remote exploitable", "confirmed exploitable"}
 
     findings: list[VerifierFinding] = []
-    for path, value, marker in find_forbidden_string_values(report, markers):
+    for path, _value, marker in find_forbidden_string_values(report, markers):
         findings.append(
             VerifierFinding(
                 severity="high",
                 code="unsupported_claim",
-                message="Potential unsupported claim marker %s in %s" % (marker, value[:80]),
+                message="Potential unsupported claim marker %s at %s" % (marker, path),
                 path=path,
             )
         )
@@ -340,23 +344,47 @@ def find_forbidden_string_values(
     value: object,
     forbidden_strings: Iterable[str],
     path: str = "",
+    *,
+    include_local_paths: bool = False,
 ) -> list[tuple[str, str, str]]:
     markers = [marker.lower() for marker in forbidden_strings if marker]
     hits: list[tuple[str, str, str]] = []
     if isinstance(value, str):
         lowered = value.lower()
+        if include_local_paths and LOCAL_PATH_PATTERN.search(value):
+            hits.append((path, value, "local_path"))
         for marker in markers:
             if marker in lowered:
-                hits.append((path, value, marker))
+                hits.append((path, value, marker_class(include_local_paths)))
     elif isinstance(value, Mapping):
         for key, child in value.items():
             child_path = "%s.%s" % (path, key) if path else str(key)
-            hits.extend(find_forbidden_string_values(child, markers, child_path))
+            hits.extend(
+                find_forbidden_string_values(
+                    child,
+                    markers,
+                    child_path,
+                    include_local_paths=include_local_paths,
+                )
+            )
     elif isinstance(value, list):
         for index, child in enumerate(value):
             child_path = "%s[%s]" % (path, index)
-            hits.extend(find_forbidden_string_values(child, markers, child_path))
+            hits.extend(
+                find_forbidden_string_values(
+                    child,
+                    markers,
+                    child_path,
+                    include_local_paths=include_local_paths,
+                )
+            )
     return hits
+
+
+def marker_class(include_local_paths: bool) -> str:
+    if include_local_paths:
+        return "unsafe_text"
+    return "unsupported_claim"
 
 
 def walk_strings(value: object) -> Iterable[str]:

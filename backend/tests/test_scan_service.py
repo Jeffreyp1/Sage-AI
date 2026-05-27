@@ -87,6 +87,14 @@ class FailingOsvClient:
         raise OsvClientError("provider unavailable")
 
 
+class UnsafeFailingOsvClient:
+    def query(self, package_name, version, ecosystem):
+        raise OsvClientError(
+            "GET https://api.osv.dev?token=ghp_secret123 failed while reading "
+            "/Users/auditor/private/repo/package-lock.json"
+        )
+
+
 class MismatchedOsvClient:
     def query(self, package_name, version, ecosystem):
         return [
@@ -277,7 +285,10 @@ class ScanServiceTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = ScanService(osv_client=FakeOsvClient()).scan_local(str(root))
+            result = ScanService(osv_client=FakeOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            )
 
         self.assertEqual(result.summary["deduped_remediation_tasks"], 2)
         top_task = result.remediation_tasks[0]
@@ -321,7 +332,10 @@ class ScanServiceTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = ScanService(osv_client=DuplicateLockPathOsvClient()).scan_local(str(root))
+            result = ScanService(osv_client=DuplicateLockPathOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            )
 
         self.assertEqual(result.summary["raw_alerts"], 2)
         self.assertEqual(result.summary["deduped_remediation_tasks"], 1)
@@ -388,7 +402,10 @@ class ScanServiceTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = ScanService(osv_client=DirectAndTransitiveOsvClient()).scan_local(str(root))
+            result = ScanService(osv_client=DirectAndTransitiveOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            )
 
         self.assertEqual(result.summary["raw_alerts"], 2)
         self.assertEqual(result.summary["deduped_remediation_tasks"], 1)
@@ -443,7 +460,10 @@ class ScanServiceTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = ScanService(osv_client=DevNoFixedVersionOsvClient()).scan_local(str(root))
+            result = ScanService(osv_client=DevNoFixedVersionOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            )
 
         self.assertEqual(result.summary["deduped_remediation_tasks"], 1)
         self.assertEqual(result.summary["safe_to_defer"], 0)
@@ -488,7 +508,7 @@ class ScanServiceTest(unittest.TestCase):
 
             result = ScanService(
                 osv_client=DowngradeOnlyFixedVersionOsvClient()
-            ).scan_local(str(root))
+            ).scan_local(str(root), workspace_root=root)
 
         self.assertEqual(result.summary["deduped_remediation_tasks"], 1)
         self.assertEqual(result.summary["release_blockers"], 0)
@@ -518,7 +538,10 @@ class ScanServiceTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = ScanService(osv_client=UnsafeDetailsOsvClient()).scan_local(str(root))
+            result = ScanService(osv_client=UnsafeDetailsOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            )
 
         output = result.to_dict()
         vulnerability = output["vulnerabilities"][0]
@@ -563,12 +586,212 @@ class ScanServiceTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = ScanService(osv_client=FailingOsvClient()).scan_local(str(root)).to_dict()
+            result = ScanService(osv_client=FailingOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
 
         self.assertEqual(result["summary"]["scan_status"], "incomplete")
         self.assertFalse(result["summary"]["complete"])
         self.assertEqual(result["summary"]["deduped_remediation_tasks"], 0)
         self.assertEqual(result["summary"]["error_count"], 1)
+
+    def test_public_scan_errors_do_not_include_raw_osv_exception_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"archive-utils": "2.1.4"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/archive-utils": {"version": "2.1.4"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=UnsafeFailingOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertEqual(
+            result["errors"],
+            [
+                "OSV query failed for archive-utils@2.1.4; vulnerability data may be incomplete."
+            ],
+        )
+        self.assertNotIn("ghp_secret123", serialized)
+        self.assertNotIn("/Users/auditor/private/repo", serialized)
+
+    def test_public_scan_errors_sanitize_unsafe_package_identifiers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"private-token-package": "2.1.4"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/private-token-package": {"version": "2.1.4"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=FailingOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertIn("[redacted-secret]", serialized)
+        self.assertNotIn("private-token-package", serialized)
+        self.assertEqual(
+            result["errors"],
+            [
+                "OSV query failed for [redacted-secret]@2.1.4; vulnerability data may be incomplete."
+            ],
+        )
+
+    def test_public_scan_errors_sanitize_bare_token_package_without_exact_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"token": "latest"}}),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=FailingOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("for token because", serialized)
+        self.assertIn("[redacted-secret]", serialized)
+        self.assertEqual(
+            result["errors"],
+            [
+                "Skipped OSV query for [redacted-secret] because exact installed version was unavailable."
+            ],
+        )
+
+    def test_public_scan_errors_sanitize_bare_token_package_on_osv_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"token": "1.0.0"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/token": {"version": "1.0.0"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=FailingOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("token@1.0.0", serialized)
+        self.assertIn("[redacted-secret]@1.0.0", serialized)
+        self.assertEqual(
+            result["errors"],
+            [
+                "OSV query failed for [redacted-secret]@1.0.0; vulnerability data may be incomplete."
+            ],
+        )
+
+    def test_public_scan_output_sanitizes_absolute_posix_package_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"/etc/passwd": "1.0.0"}}),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=FailingOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("/etc/passwd", serialized)
+        self.assertIn("[redacted-path]", serialized)
+
+    def test_public_scan_output_sanitizes_scoped_private_package_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"@private/token": "1.0.0"}}),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=FailingOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("@private/token", serialized)
+        self.assertIn("[redacted-secret]", serialized)
+        self.assertEqual(
+            result["errors"],
+            [
+                "Skipped OSV query for [redacted-secret] because exact installed version was unavailable."
+            ],
+        )
+
+    def test_public_scan_output_sanitizes_scoped_private_package_in_freeform_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"@private/token": "1.0.0"}}),
+                encoding="utf-8",
+            )
+            (root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {},
+                            "node_modules/@private/token": {"version": "1.0.0"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ScanService(osv_client=FailingOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("@private/token", serialized)
+        self.assertIn("[redacted-secret]", serialized)
 
     def test_mismatched_osv_package_does_not_create_task(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -590,7 +813,10 @@ class ScanServiceTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = ScanService(osv_client=MismatchedOsvClient()).scan_local(str(root)).to_dict()
+            result = ScanService(osv_client=MismatchedOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
 
         self.assertEqual(result["summary"]["deduped_remediation_tasks"], 0)
         self.assertEqual(result["summary"]["scan_status"], "incomplete")
@@ -620,7 +846,10 @@ class ScanServiceTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            output = ScanService(osv_client=UnsafeSummaryOsvClient()).scan_local(str(root)).to_dict()
+            output = ScanService(osv_client=UnsafeSummaryOsvClient()).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
 
         serialized = json.dumps(output)
         self.assertNotIn("PoC", serialized)
