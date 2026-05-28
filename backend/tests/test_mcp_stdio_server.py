@@ -53,6 +53,21 @@ class FailingListToolsHandlers(FakeHandlers):
         raise RuntimeError("/Users/example/private/repo list tools crash")
 
 
+class FailingScanService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Path | None]] = []
+
+    def scan_local(
+        self,
+        repo_path: str,
+        *,
+        workspace_root: str | Path | None = None,
+    ) -> object:
+        root_path = None if workspace_root is None else Path(workspace_root)
+        self.calls.append((repo_path, root_path))
+        raise AssertionError("scan service should not be called")
+
+
 def test_initialize_returns_tools_capability_and_server_info():
     server = JsonRpcMcpServer(handlers=FakeHandlers())
 
@@ -191,6 +206,41 @@ def test_tools_call_validation_error_does_not_echo_rejected_input(tmp_path):
     assert "repo_path:string_type" in serialized
     assert "repo-secret" not in serialized
     assert "/Users/example" not in serialized
+
+
+def test_scan_current_repo_stdio_rejects_repo_path_extra_field_before_scanning(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    scan_service = FailingScanService()
+    server = JsonRpcMcpServer(
+        handlers=McpToolHandlers(
+            workspace_root=workspace,
+            storage_dir=workspace / "reports",
+            scan_service=scan_service,
+        )
+    )
+
+    response = response_for_line(
+        server,
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 15,
+                "method": "tools/call",
+                "params": {
+                    "name": "scan_current_repo",
+                    "arguments": {"repo_path": "payments-api", "max_findings": 1},
+                },
+            }
+        ),
+    )
+
+    assert "error" not in response
+    result = response["result"]
+    assert result["isError"] is True
+    assert "Invalid input for scan_current_repo" in result["content"][0]["text"]
+    assert "repo_path:extra_forbidden" in result["content"][0]["text"]
+    assert scan_service.calls == []
 
 
 def test_tools_call_unknown_tool_does_not_echo_tool_name(tmp_path):
