@@ -53,7 +53,7 @@ class ScanRepoInput(ContractModel):
 
 
 class ScanCurrentRepoInput(ContractModel):
-    offline: bool = Field(default=True, description="Disable external vulnerability lookups.")
+    offline: bool = Field(default=False, description="Disable external vulnerability lookups.")
     max_findings: int = Field(default=10, ge=1, le=MAX_FINDINGS_LIMIT)
 
 

@@ -182,6 +182,7 @@ Example MCP client config shape:
 
 Exposed tools:
 
+- `scan_current_repo` with optional `offline` and optional `max_findings`
 - `scan_repo` with `repo_path`, optional `offline`, and optional `max_findings`
 - `list_findings`
 - `get_finding`
@@ -270,7 +271,7 @@ args = ["--workspace-root", "/absolute/path/to/repo"]
 Ask the client:
 
 ```text
-Use sage-ai to scan this repo offline, get the top finding's AI context bundle,
+Use sage-ai to scan this repo, get the top finding's AI context bundle,
 write a cited remediation explanation, then validate your AI output with
 sage-ai before showing it to me.
 ```

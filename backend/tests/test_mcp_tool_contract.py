@@ -59,11 +59,11 @@ def test_scan_repo_input_defaults_are_local_and_bounded():
     assert request.max_findings == 10
 
 
-def test_scan_current_repo_defaults_to_offline_and_bounded():
+def test_scan_current_repo_defaults_to_osv_lookup_and_bounded():
     request = ScanCurrentRepoInput()
     schema = ScanCurrentRepoInput.model_json_schema()
 
-    assert request.offline is True
+    assert request.offline is False
     assert request.max_findings == 10
     assert schema["properties"]["max_findings"]["maximum"] == MAX_FINDINGS_LIMIT
     assert "repo_path" not in schema["properties"]
