@@ -565,9 +565,12 @@ def pinned_python_version(version_spec: Optional[str]) -> Optional[str]:
     if version_spec is None:
         return None
     match = re.match(r"^==\s*([^,\s]+)$", version_spec)
-    if match:
-        return match.group(1)
-    return None
+    if not match:
+        return None
+    version = match.group(1)
+    if "*" in version:
+        return None
+    return version
 
 
 def python_optional_dependency_type(group_name: object) -> str:

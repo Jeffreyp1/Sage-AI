@@ -182,9 +182,10 @@ class PythonDependencyParserTest(unittest.TestCase):
                 "\n".join(
                     [
                         "# production dependencies",
-                        "requests==2.31.0",
+                        "flask==3.0.2",
+                        "requests==2.31.*",
                         "fastapi~=0.110",
-                        "django>=4.2  # range stays a version spec",
+                        "django>=5  # range stays a version spec",
                         "uvicorn",
                         "",
                     ]
@@ -195,14 +196,18 @@ class PythonDependencyParserTest(unittest.TestCase):
             dependencies = PythonDependencyParser().parse(str(root))
 
         by_name = {dependency.name: dependency for dependency in dependencies}
-        self.assertEqual(set(by_name), {"django", "fastapi", "requests", "uvicorn"})
-        self.assertEqual(by_name["requests"].ecosystem, "PyPI")
-        self.assertEqual(by_name["requests"].current_version, "2.31.0")
-        self.assertEqual(by_name["requests"].version_spec, "==2.31.0")
-        self.assertTrue(by_name["requests"].is_direct)
+        self.assertEqual(set(by_name), {"django", "fastapi", "flask", "requests", "uvicorn"})
+        self.assertEqual(by_name["flask"].ecosystem, "PyPI")
+        self.assertEqual(by_name["flask"].current_version, "3.0.2")
+        self.assertEqual(by_name["flask"].version_spec, "==3.0.2")
+        self.assertTrue(by_name["flask"].is_direct)
+        self.assertEqual(by_name["requests"].current_version, None)
+        self.assertEqual(by_name["requests"].version_spec, "==2.31.*")
         self.assertEqual(by_name["fastapi"].current_version, None)
         self.assertEqual(by_name["fastapi"].version_spec, "~=0.110")
-        self.assertEqual(by_name["django"].version_spec, ">=4.2")
+        self.assertEqual(by_name["django"].current_version, None)
+        self.assertEqual(by_name["django"].version_spec, ">=5")
+        self.assertEqual(by_name["uvicorn"].current_version, None)
         self.assertEqual(by_name["uvicorn"].version_spec, None)
         self.assertEqual(by_name["uvicorn"].dependency_type, "dependencies")
 
@@ -214,6 +219,7 @@ class PythonDependencyParserTest(unittest.TestCase):
 [project]
 dependencies = [
     "flask==3.0.2",
+    "requests==2.31.*",
     "httpx>=0.27",
 ]
 
@@ -231,9 +237,11 @@ docs = [
             dependencies = PythonDependencyParser().parse(str(root))
 
         by_name = {dependency.name: dependency for dependency in dependencies}
-        self.assertEqual(set(by_name), {"flask", "httpx", "mkdocs", "pytest"})
+        self.assertEqual(set(by_name), {"flask", "httpx", "mkdocs", "pytest", "requests"})
         self.assertEqual(by_name["flask"].dependency_type, "dependencies")
         self.assertEqual(by_name["flask"].current_version, "3.0.2")
+        self.assertEqual(by_name["requests"].version_spec, "==2.31.*")
+        self.assertEqual(by_name["requests"].current_version, None)
         self.assertEqual(by_name["httpx"].version_spec, ">=0.27")
         self.assertEqual(by_name["pytest"].dependency_type, "devDependency")
         self.assertEqual(by_name["pytest"].current_version, "8.2.0")

@@ -241,7 +241,43 @@ class DowngradeOnlyFixedVersionOsvClient:
         ]
 
 
+class RecordingPythonOsvClient:
+    def __init__(self):
+        self.calls = []
+
+    def query(self, package_name, version, ecosystem):
+        self.calls.append((package_name, version, ecosystem))
+        return []
+
+
 class ScanServiceTest(unittest.TestCase):
+    def test_scan_skips_python_wildcard_equality_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "requirements.txt").write_text(
+                "\n".join(
+                    [
+                        "flask==3.0.2",
+                        "requests==2.31.*",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            osv_client = RecordingPythonOsvClient()
+
+            result = ScanService(osv_client=osv_client).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        self.assertEqual(osv_client.calls, [("flask", "3.0.2", "PyPI")])
+        self.assertEqual(
+            result["errors"],
+            [
+                "Skipped OSV query for requests because exact installed version was unavailable."
+            ],
+        )
+
     def test_scan_builds_prioritized_remediation_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
