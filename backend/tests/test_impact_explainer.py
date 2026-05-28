@@ -1,5 +1,5 @@
 from app.services.impact_explainer import explain_possible_impact
-from app.services.public_safety import contains_unsafe_public_text
+from app.services.public_safety import UNSAFE_PUBLIC_MARKERS, contains_unsafe_public_text
 
 
 def test_explains_confirmed_facts_and_possible_impacts_conservatively():
@@ -135,6 +135,51 @@ def test_unsafe_summary_and_evidence_details_are_replaced_wholesale():
     assert "<script>" not in joined_result
     assert "demo.sh" not in joined_result
     assert "script.js" not in joined_result
+
+
+def test_unsafe_public_marker_summaries_are_replaced_wholesale():
+    for marker in UNSAFE_PUBLIC_MARKERS:
+        task = base_task(
+            vulnerability={
+                "summary": "Upstream advisory mentions %s details for reviewer context."
+                % marker,
+            },
+        )
+
+        result = explain_possible_impact(task)
+        joined_result = " ".join(flatten_result(result)).lower()
+
+        assert "Vulnerability summary contained unsafe technical detail and was redacted." in result[
+            "confirmed_facts"
+        ]
+        assert marker not in joined_result
+        assert "details for reviewer context" not in joined_result
+        assert contains_unsafe_public_text(result) is False
+
+
+def test_unsafe_public_marker_evidence_claims_are_replaced_wholesale():
+    for marker in UNSAFE_PUBLIC_MARKERS:
+        task = base_task(
+            evidence=[
+                {
+                    "type": "advisory",
+                    "source": "vendor advisory",
+                    "claim": "Vendor evidence mentions %s details for reviewer context."
+                    % marker,
+                }
+            ],
+        )
+
+        result = explain_possible_impact(task)
+        joined_result = " ".join(flatten_result(result)).lower()
+
+        assert (
+            "Report evidence from vendor advisory contained unsafe technical detail and was redacted."
+            in result["confirmed_facts"]
+        )
+        assert marker not in joined_result
+        assert "details for reviewer context" not in joined_result
+        assert contains_unsafe_public_text(result) is False
 
 
 def test_empty_or_malformed_input_returns_unknown_context_without_supply_chain():

@@ -1,9 +1,9 @@
-"""Conservative deterministic impact explanations for remediation tasks."""
+"""Standalone library service for future MCP/report impact explanation wiring."""
 
 import re
 from collections.abc import Mapping, Sequence
 
-from app.services.public_safety import sanitize_public_value
+from app.services.public_safety import contains_public_leak_text, sanitize_public_value
 
 
 ImpactExplanation = dict[str, list[str]]
@@ -51,15 +51,6 @@ UNSAFE_DETAIL_PATTERN = re.compile(
     r"(<\s*/?\s*script\b|https?://\S+|\b(?:curl|wget|bash|sh|python|node)\b\s+(?:-|https?://|\S))",
     re.IGNORECASE,
 )
-UNSAFE_DETAIL_MARKERS = (
-    "proof-of-concept",
-    "proof of concept",
-    "exploit code",
-    "exploit-code",
-    "exploit steps",
-    "poc",
-)
-
 
 def explain_possible_impact(task: Mapping[str, object]) -> dict[str, list[str]]:
     """Return conservative impact context for a remediation task-like dict."""
@@ -424,9 +415,7 @@ def safe_fact_sentence(value: str, unsafe_message: str, safe_message: str) -> st
 
 
 def contains_unsafe_detail(value: str) -> bool:
-    normalized = value.lower()
-    has_unsafe_marker = any(marker in normalized for marker in UNSAFE_DETAIL_MARKERS)
-    return has_unsafe_marker or UNSAFE_DETAIL_PATTERN.search(value) is not None
+    return contains_public_leak_text(value) or UNSAFE_DETAIL_PATTERN.search(value) is not None
 
 
 def sanitize_result(result: dict[str, list[str]]) -> dict[str, list[str]]:
