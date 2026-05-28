@@ -17,6 +17,7 @@ from app.agents.state import (
     TriageWorkflowState,
     VulnerabilityTriageExplanation,
 )
+from app.services.ai_context_bundle import build_ai_context_bundle, validate_client_ai_output
 from app.services.ai_summary_service import AISummaryService
 from app.services.public_safety import sanitize_text
 from app.services.rag_types import EvidenceChunk
@@ -39,6 +40,8 @@ RISKY_REMEDIATION_ACTIONS = {
 }
 MAX_TRIAGE_EVIDENCE_CHUNKS = 50
 AI_SUMMARY_BLOCKED_REASON = "AI summary validation blocked citation verification."
+CLIENT_AI_VALIDATION_BLOCKED_REASON = "Client AI output validation blocked human approval."
+CLIENT_AI_ORCHESTRATION_ERROR_BLOCKED_REASON = "Client AI orchestration failed closed."
 EVIDENCE_LIMIT_BLOCKED_REASON = "Evidence chunk limit exceeded."
 
 
@@ -80,6 +83,137 @@ class TriageGraph:
         self.citation_verification_node(state)
         self.human_approval_node(state, human_decision)
         return state
+
+    def run_with_client_ai(
+        self,
+        *,
+        remediation_task: Mapping[str, object],
+        evidence_chunks: Iterable[EvidenceChunk],
+        ai_output: Mapping[str, object],
+        human_decision: HumanApprovalDecision | None = None,
+    ) -> TriageWorkflowState:
+        bounded_chunks, evidence_limit_exceeded = bounded_evidence_chunks(evidence_chunks)
+        state = TriageWorkflowState(
+            remediation_task=dict(remediation_task),
+            evidence_chunks=[] if evidence_limit_exceeded else bounded_chunks,
+        )
+
+        if evidence_limit_exceeded:
+            self.evidence_limit_node(state)
+            return state
+
+        if not self.run_client_ai_node(state, "ai_context_bundle"):
+            self.human_approval_node(state, human_decision)
+            return state
+        if not self.run_client_ai_node(state, "client_ai_validation", ai_output):
+            self.human_approval_node(state, human_decision)
+            return state
+
+        self.human_approval_node(state, human_decision)
+        return state
+
+    def run_client_ai_node(
+        self,
+        state: TriageWorkflowState,
+        node_name: str,
+        ai_output: Mapping[str, object] | None = None,
+    ) -> bool:
+        try:
+            if node_name == "ai_context_bundle":
+                self.ai_context_bundle_node(state)
+                return True
+            if ai_output is None:
+                raise ValueError("client AI validation output is required")
+            self.client_ai_validation_node(state, ai_output)
+            return True
+        except Exception:
+            logger.warning("Client AI orchestration failed closed at %s.", node_name)
+            self.client_ai_error_node(state, node_name)
+            return False
+
+    def client_ai_error_node(
+        self,
+        state: TriageWorkflowState,
+        node_name: str,
+    ) -> None:
+        state.status = BLOCKED
+        state.approved = False
+        state.blocked_reasons.append(CLIENT_AI_ORCHESTRATION_ERROR_BLOCKED_REASON)
+        self.record_node(
+            state,
+            node_name,
+            BLOCKED,
+            {
+                "blocked": True,
+                "reason": CLIENT_AI_ORCHESTRATION_ERROR_BLOCKED_REASON,
+            },
+        )
+
+    def ai_context_bundle_node(self, state: TriageWorkflowState) -> None:
+        bundle = build_ai_context_bundle(
+            state.remediation_task,
+            retrieved_chunks=state.evidence_chunks,
+        )
+        retrieved_chunk_ids = [chunk.chunk_id for chunk in state.evidence_chunks]
+        bundle_evidence_count = evidence_count(bundle)
+        output = {
+            "finding_id": bundle.get("finding_id"),
+            "evidence_count": bundle_evidence_count,
+            "retrieved_chunk_ids": retrieved_chunk_ids,
+        }
+        self.trace_service.record_event(
+            agent_name="triage-graph",
+            event_type="ai.context_bundle",
+            input_json={
+                "task_id": state.remediation_task.get("task_id"),
+                "evidence_count": bundle_evidence_count,
+                "retrieved_chunk_ids": retrieved_chunk_ids,
+            },
+            retrieved_context_json={
+                "retrieved_chunk_ids": retrieved_chunk_ids,
+            },
+            output_json=output,
+            validation_status=PASSED,
+        )
+        self.record_node(state, "ai_context_bundle", PASSED, output)
+
+    def client_ai_validation_node(
+        self,
+        state: TriageWorkflowState,
+        ai_output: Mapping[str, object],
+    ) -> None:
+        validation = validate_client_ai_output(
+            state.remediation_task,
+            ai_output,
+            retrieved_chunks=state.evidence_chunks,
+        )
+        blocked = validation.get("blocked") is True
+        if blocked:
+            state.status = BLOCKED
+            state.approved = False
+            state.blocked_reasons.append(CLIENT_AI_VALIDATION_BLOCKED_REASON)
+
+        status = BLOCKED if blocked else PASSED
+        output = {
+            "passed": validation.get("passed") is True,
+            "blocked": blocked,
+            "summary": validation.get("summary"),
+            "validation": mapping_to_dict(validation.get("validation")),
+        }
+        self.trace_service.record_event(
+            agent_name="triage-graph",
+            event_type="ai.output_validation",
+            input_json={
+                "task_id": state.remediation_task.get("task_id"),
+                "retrieved_chunk_ids": [chunk.chunk_id for chunk in state.evidence_chunks],
+            },
+            output_json={
+                "passed": output["passed"],
+                "blocked": blocked,
+            },
+            validation_status=status,
+        )
+        self.record_node(state, "client_ai_validation", status, output)
 
     def repo_context_node(self, state: TriageWorkflowState) -> None:
         package = mapping_value(state.remediation_task.get("package"))
@@ -313,6 +447,14 @@ def mapping_to_dict_or_none(value: object) -> dict[str, object] | None:
     if isinstance(value, Mapping):
         return dict(value)
     return None
+
+
+def evidence_count(bundle: Mapping[str, object]) -> int:
+    request = mapping_value(bundle.get("ai_request"))
+    evidence = request.get("evidence")
+    if isinstance(evidence, list):
+        return len(evidence)
+    return 0
 
 
 def public_human_decision_dict(
