@@ -13,12 +13,16 @@ from app.mcp.contracts import (
     AIContextBundleInput,
     AIContextBundleOutput,
     CompactFinding,
+    ExplainTopRisksInput,
+    ExplainTopRisksOutput,
     FindingEvidenceOutput,
     FindingInput,
     FindingOutput,
+    GetVulnerabilityBriefOutput,
     ListFindingsInput,
     ListFindingsOutput,
     RemediationContextOutput,
+    ScanCurrentRepoInput,
     ScanRepoInput,
     ScanRepoOutput,
     ValidateAIOutputInput,
@@ -31,6 +35,7 @@ from app.mcp.contracts import (
 from app.mcp.store import FileReportStore, ReportStoreError
 from app.schemas.report import RemediationTaskSchema, ScanReport
 from app.services.ai_context_bundle import build_ai_context_bundle, validate_client_ai_output
+from app.services.ai_summary_service import evidence_items_for_task
 from app.services.path_policy import PathPolicyError, resolve_existing_workspace, resolve_repo_path
 from app.services.public_safety import (
     sanitize_public_identifier,
@@ -107,9 +112,12 @@ class McpToolHandlers:
         self.contracts = {contract.name: contract for contract in tool_contracts()}
         self.handlers: dict[str, Callable[[BaseModel], BaseModel]] = {
             "scan_repo": self._scan_repo,
+            "scan_current_repo": self._scan_current_repo,
             "list_findings": self._list_findings,
             "get_finding": self._get_finding,
             "get_finding_evidence": self._get_finding_evidence,
+            "get_vulnerability_brief": self._get_vulnerability_brief,
+            "explain_top_risks": self._explain_top_risks,
             "get_remediation_context": self._get_remediation_context,
             "get_ai_context_bundle": self._get_ai_context_bundle,
             "validate_ai_output": self._validate_ai_output,
@@ -180,7 +188,33 @@ class McpToolHandlers:
         except PathPolicyError as error:
             raise ToolHandlerError(str(error)) from error
 
-        service = self._scan_service(offline=request.offline)
+        return self._scan_path(
+            repo_path,
+            offline=request.offline,
+            max_findings=request.max_findings,
+        )
+
+    def _scan_current_repo(self, model: BaseModel) -> ScanRepoOutput:
+        request = as_model(model, ScanCurrentRepoInput)
+        try:
+            repo_path = resolve_repo_path(".", workspace_root=self.workspace_root)
+        except PathPolicyError as error:
+            raise ToolHandlerError(str(error)) from error
+
+        return self._scan_path(
+            repo_path,
+            offline=request.offline,
+            max_findings=request.max_findings,
+        )
+
+    def _scan_path(
+        self,
+        repo_path: Path,
+        *,
+        offline: bool,
+        max_findings: int,
+    ) -> ScanRepoOutput:
+        service = self._scan_service(offline=offline)
         try:
             result = service.scan_local(str(repo_path), workspace_root=self.workspace_root)
             report = ScanReport.model_validate(result.to_dict())
@@ -204,7 +238,7 @@ class McpToolHandlers:
             scan_status=summary.scan_status,
             error_count=summary.error_count,
             summary=summary,
-            top_findings=compact_findings(report, limit=request.max_findings),
+            top_findings=compact_findings(report, limit=max_findings),
             report_path=report_path.name,
         )
 
@@ -232,6 +266,36 @@ class McpToolHandlers:
             task_id=safe_text(finding.task_id),
             evidence=evidence,
         )
+
+    def _get_vulnerability_brief(self, model: BaseModel) -> GetVulnerabilityBriefOutput:
+        request = as_model(model, FindingInput)
+        report = self._load_report(request.scan_id)
+        finding = find_task(report, request.task_id)
+        return GetVulnerabilityBriefOutput(
+            scan_id=report.scan_id,
+            task_id=safe_text(finding.task_id),
+            brief=vulnerability_brief(finding),
+            evidence=evidence_items_with_ids(finding),
+            risk_rationale=safe_text_list(finding.risk.rationale),
+        )
+
+    def _explain_top_risks(self, model: BaseModel) -> ExplainTopRisksOutput:
+        request = as_model(model, ExplainTopRisksInput)
+        report = self._load_report(request.scan_id)
+        findings: list[dict[str, object]] = []
+        for task in report.remediation_tasks[: request.limit]:
+            compact = sanitized_compact_finding(task)
+            findings.append(
+                {
+                    "task_id": compact.task_id,
+                    "package_name": compact.package_name,
+                    "vulnerability_id": compact.vulnerability_id,
+                    "priority": compact.priority,
+                    "risk_score": compact.risk_score,
+                    "evidence_ids": evidence_ids_for_task(task),
+                }
+            )
+        return ExplainTopRisksOutput(scan_id=report.scan_id, findings=findings)
 
     def _get_remediation_context(self, model: BaseModel) -> RemediationContextOutput:
         request = as_model(model, FindingInput)
@@ -387,6 +451,41 @@ def sanitized_finding(task: RemediationTaskSchema) -> RemediationTaskSchema:
     return RemediationTaskSchema.model_validate(payload)
 
 
+def vulnerability_brief(task: RemediationTaskSchema) -> dict[str, object]:
+    brief: dict[str, object] = {
+        "task_id": safe_text(task.task_id),
+        "package_name": safe_identifier_text(task.package.name),
+        "vulnerability_id": safe_text(task.vulnerability.canonical_id),
+        "priority": safe_text(task.risk.priority),
+        "risk_score": task.risk.risk_score,
+    }
+    optional_values = {
+        "severity": task.vulnerability.severity,
+        "current_version": task.package.current_version,
+        "target_version": task.patch_plan.target_version,
+        "summary": task.vulnerability.summary,
+        "recommended_action": task.patch_plan.recommended_action,
+    }
+    for key, value in optional_values.items():
+        if value is not None:
+            brief[key] = safe_text(value)
+    return brief
+
+
+def evidence_items_with_ids(task: RemediationTaskSchema) -> list[dict[str, str]]:
+    request_evidence = evidence_items_for_task(task.model_dump(mode="json"), ())
+    evidence: list[dict[str, str]] = []
+    for item, request_item in zip(task.evidence, request_evidence, strict=False):
+        output = evidence_item(item)
+        output["id"] = safe_text(request_item.id)
+        evidence.append(output)
+    return evidence
+
+
+def evidence_ids_for_task(task: RemediationTaskSchema) -> list[str]:
+    return [item["id"] for item in evidence_items_with_ids(task)]
+
+
 def evidence_item(item: BaseModel) -> dict[str, str]:
     payload = item.model_dump(mode="json", exclude_none=True)
     output: dict[str, str] = {}
@@ -429,6 +528,10 @@ def mapping_value(value: object) -> dict[str, object]:
     if isinstance(value, Mapping):
         return dict(value)
     return {}
+
+
+def safe_text_list(values: list[str]) -> list[str]:
+    return [safe_text(value) for value in values]
 
 
 def safe_text(value: str) -> str:

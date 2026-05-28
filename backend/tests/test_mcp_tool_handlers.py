@@ -5,8 +5,10 @@ import pytest
 
 from app.mcp.contracts import (
     AIContextBundleOutput,
+    ExplainTopRisksOutput,
     FindingEvidenceOutput,
     FindingOutput,
+    GetVulnerabilityBriefOutput,
     ListFindingsOutput,
     RemediationContextOutput,
     ScanRepoOutput,
@@ -122,6 +124,140 @@ def test_scan_repo_persists_report_and_followup_tools_return_validated_models(tm
     assert isinstance(validation, ValidateReportOutput)
     assert validation.passed is True
     assert validation.finding_count == 0
+
+
+def test_scan_current_repo_scans_workspace_root_without_repo_path(tmp_path):
+    workspace = tmp_path / "workspace"
+    storage = workspace / "mcp-reports"
+    workspace.mkdir()
+    service = RecordingScanService(scan_report_fixture())
+    handlers = McpToolHandlers(
+        workspace_root=workspace,
+        storage_dir=storage,
+        scan_service=service,
+    )
+
+    scan = handlers.call_tool("scan_current_repo", {"max_findings": 1})
+
+    assert isinstance(scan, ScanRepoOutput)
+    assert scan.scan_id == "scan-test-001"
+    assert scan.top_findings[0].package_name == "archive-utils"
+    assert service.calls == [(str(workspace.resolve()), workspace.resolve())]
+
+
+def test_get_vulnerability_brief_returns_report_facts_and_evidence_ids(tmp_path):
+    workspace = tmp_path / "workspace"
+    repo = workspace / "payments-api"
+    storage = workspace / "mcp-reports"
+    repo.mkdir(parents=True)
+    handlers = McpToolHandlers(
+        workspace_root=workspace,
+        storage_dir=storage,
+        scan_service=RecordingScanService(scan_report_fixture()),
+    )
+    scan = handlers.call_tool("scan_repo", {"repo_path": "payments-api", "offline": True})
+
+    brief = handlers.call_tool(
+        "get_vulnerability_brief",
+        {"scan_id": scan.scan_id, "task_id": "task-archive-utils"},
+    )
+
+    assert isinstance(brief, GetVulnerabilityBriefOutput)
+    assert brief.scan_id == scan.scan_id
+    assert brief.task_id == "task-archive-utils"
+    assert brief.brief == {
+        "task_id": "task-archive-utils",
+        "package_name": "archive-utils",
+        "vulnerability_id": "CVE-2026-0001",
+        "priority": "P1_FIX_THIS_SPRINT",
+        "risk_score": 78,
+        "severity": "HIGH",
+        "current_version": "1.4.0",
+        "target_version": "2.2.0",
+        "summary": "Archive parsing vulnerability.",
+        "recommended_action": "upgrade",
+    }
+    assert brief.risk_rationale == ["Risk score 78 maps to P1_FIX_THIS_SPRINT."]
+    assert brief.evidence == [
+        {
+            "id": "ev-task-cf1580e68df8",
+            "type": "lockfile_entry",
+            "source": "package-lock.json",
+            "claim": "archive-utils@1.4.0 is installed in package-lock.json.",
+        },
+        {
+            "id": "ev-task-0eee8986d3be",
+            "type": "reachability",
+            "source": "src/upload.ts",
+            "claim": "archive-utils is imported by the production upload route.",
+        },
+    ]
+
+
+def test_explain_top_risks_returns_deterministic_compact_summary(tmp_path):
+    workspace = tmp_path / "workspace"
+    repo = workspace / "payments-api"
+    storage = workspace / "mcp-reports"
+    repo.mkdir(parents=True)
+    handlers = McpToolHandlers(
+        workspace_root=workspace,
+        storage_dir=storage,
+        scan_service=RecordingScanService(scan_report_fixture()),
+    )
+    scan = handlers.call_tool("scan_repo", {"repo_path": "payments-api", "offline": True})
+
+    risks = handlers.call_tool("explain_top_risks", {"scan_id": scan.scan_id, "limit": 1})
+
+    assert isinstance(risks, ExplainTopRisksOutput)
+    assert risks.scan_id == scan.scan_id
+    assert risks.findings == [
+        {
+            "task_id": "task-archive-utils",
+            "package_name": "archive-utils",
+            "vulnerability_id": "CVE-2026-0001",
+            "priority": "P1_FIX_THIS_SPRINT",
+            "risk_score": 78,
+            "evidence_ids": ["ev-task-cf1580e68df8", "ev-task-0eee8986d3be"],
+        }
+    ]
+
+
+def test_brief_and_top_risks_sanitize_stored_report_values(tmp_path):
+    workspace = tmp_path / "workspace"
+    repo = workspace / "payments-api"
+    storage = workspace / "mcp-reports"
+    repo.mkdir(parents=True)
+    report = scan_report_fixture(
+        evidence_claim="PoC demonstrates malicious payload handling in uploads.",
+        summary="Archive parser PoC with malicious payload details.",
+    )
+    task = report["remediation_tasks"][0]
+    task["package"]["name"] = "proof-of-concept-payload-lib"
+    task["vulnerability"]["canonical_id"] = "CVE-payload-2026-0001"
+    task["risk"]["rationale"] = ["PoC malicious payload raises scanner priority."]
+    handlers = McpToolHandlers(
+        workspace_root=workspace,
+        storage_dir=storage,
+        scan_service=RecordingScanService(report),
+    )
+    scan = handlers.call_tool("scan_repo", {"repo_path": "payments-api", "offline": True})
+
+    brief = handlers.call_tool(
+        "get_vulnerability_brief",
+        {"scan_id": scan.scan_id, "task_id": "task-archive-utils"},
+    )
+    risks = handlers.call_tool("explain_top_risks", {"scan_id": scan.scan_id})
+
+    serialized = json.dumps(
+        {
+            "brief": brief.model_dump(mode="json"),
+            "risks": risks.model_dump(mode="json"),
+        }
+    ).lower()
+    assert "[redacted]" in serialized
+    assert "proof-of-concept-payload-lib" not in serialized
+    assert "malicious payload" not in serialized
+    assert "poc" not in serialized
 
 
 def test_list_findings_and_get_finding_sanitize_stored_report_values(tmp_path):
