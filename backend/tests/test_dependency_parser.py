@@ -4,7 +4,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.services.dependency_parser import DependencyParserError, NodeDependencyParser
+from app.services.dependency_parser import (
+    DependencyParserError,
+    NodeDependencyParser,
+    PythonDependencyParser,
+    parse_dependencies,
+)
 
 
 class NodeDependencyParserTest(unittest.TestCase):
@@ -167,6 +172,121 @@ class NodeDependencyParserTest(unittest.TestCase):
         self.assertIn("Unable to read dependency file", message)
         self.assertNotIn(str(root), message)
         self.assertNotIn("package.json", message)
+
+
+class PythonDependencyParserTest(unittest.TestCase):
+    def test_parses_requirements_txt_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "requirements.txt").write_text(
+                "\n".join(
+                    [
+                        "# production dependencies",
+                        "requests==2.31.0",
+                        "fastapi~=0.110",
+                        "django>=4.2  # range stays a version spec",
+                        "uvicorn",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            dependencies = PythonDependencyParser().parse(str(root))
+
+        by_name = {dependency.name: dependency for dependency in dependencies}
+        self.assertEqual(set(by_name), {"django", "fastapi", "requests", "uvicorn"})
+        self.assertEqual(by_name["requests"].ecosystem, "PyPI")
+        self.assertEqual(by_name["requests"].current_version, "2.31.0")
+        self.assertEqual(by_name["requests"].version_spec, "==2.31.0")
+        self.assertTrue(by_name["requests"].is_direct)
+        self.assertEqual(by_name["fastapi"].current_version, None)
+        self.assertEqual(by_name["fastapi"].version_spec, "~=0.110")
+        self.assertEqual(by_name["django"].version_spec, ">=4.2")
+        self.assertEqual(by_name["uvicorn"].version_spec, None)
+        self.assertEqual(by_name["uvicorn"].dependency_type, "dependencies")
+
+    def test_parses_pep_621_pyproject_dependencies_and_optional_groups(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text(
+                """
+[project]
+dependencies = [
+    "flask==3.0.2",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.2.0",
+]
+docs = [
+    "mkdocs~=1.6",
+]
+""",
+                encoding="utf-8",
+            )
+
+            dependencies = PythonDependencyParser().parse(str(root))
+
+        by_name = {dependency.name: dependency for dependency in dependencies}
+        self.assertEqual(set(by_name), {"flask", "httpx", "mkdocs", "pytest"})
+        self.assertEqual(by_name["flask"].dependency_type, "dependencies")
+        self.assertEqual(by_name["flask"].current_version, "3.0.2")
+        self.assertEqual(by_name["httpx"].version_spec, ">=0.27")
+        self.assertEqual(by_name["pytest"].dependency_type, "devDependency")
+        self.assertEqual(by_name["pytest"].current_version, "8.2.0")
+        self.assertEqual(by_name["mkdocs"].dependency_type, "optionalDependency")
+
+    def test_malformed_pyproject_error_does_not_leak_absolute_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text("[project", encoding="utf-8")
+
+            with self.assertRaises(DependencyParserError) as caught:
+                PythonDependencyParser().parse(str(root))
+
+        message = str(caught.exception)
+        self.assertIn("Invalid TOML", message)
+        self.assertNotIn(str(root), message)
+        self.assertNotIn("pyproject.toml", message)
+
+    def test_rejects_requirements_symlink_escape_without_leaking_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            outside = Path(tmp) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            outside_requirements = outside / "requirements.txt"
+            outside_requirements.write_text("secret-package==9.9.9", encoding="utf-8")
+            (root / "requirements.txt").symlink_to(outside_requirements)
+
+            with self.assertRaises(DependencyParserError) as caught:
+                PythonDependencyParser().parse(str(root))
+
+        message = str(caught.exception)
+        self.assertIn("outside the repository", message)
+        self.assertNotIn(str(root), message)
+        self.assertNotIn(str(outside), message)
+        self.assertNotIn("secret-package", message)
+
+    def test_parse_dependencies_includes_node_and_python_manifests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                json.dumps({"dependencies": {"archive-utils": "2.1.4"}}),
+                encoding="utf-8",
+            )
+            (root / "requirements.txt").write_text("requests==2.31.0", encoding="utf-8")
+
+            dependencies = parse_dependencies(str(root))
+
+        ecosystems_by_name = {
+            dependency.name: dependency.ecosystem for dependency in dependencies
+        }
+        self.assertEqual(ecosystems_by_name["archive-utils"], "npm")
+        self.assertEqual(ecosystems_by_name["requests"], "PyPI")
 
 
 if __name__ == "__main__":
