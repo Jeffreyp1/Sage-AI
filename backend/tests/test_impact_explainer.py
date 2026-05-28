@@ -79,6 +79,53 @@ def test_known_exploited_is_only_confirmed_when_evidence_explicitly_says_so():
     ]
 
 
+def test_negated_known_exploited_evidence_does_not_confirm_or_add_urgency():
+    claims = (
+        "No known exploited activity has been observed.",
+        "The advisory says this issue is not actively exploited.",
+    )
+
+    for claim in claims:
+        task = base_task(
+            risk={"known_exploited": True, "runtime_scope": "production", "reachability": "reachable"},
+            evidence=[{"type": "advisory", "source": "vendor advisory", "claim": claim}],
+        )
+
+        result = explain_possible_impact(task)
+        joined_result = " ".join(flatten_result(result))
+
+        assert "Known exploited status is confirmed by provided report evidence." not in result[
+            "confirmed_facts"
+        ]
+        assert "Confirmed known exploited status can increase urgency" not in joined_result
+        assert "Known exploited status is not confirmed by the provided evidence." in result[
+            "unknowns"
+        ]
+
+
+def test_positive_cited_known_exploited_evidence_still_confirms():
+    task = base_task(
+        risk={"known_exploited": True, "runtime_scope": "production", "reachability": "reachable"},
+        evidence=[
+            {
+                "type": "advisory",
+                "source": "vendor advisory",
+                "claim": "Vendor advisory confirms known exploited activity in the wild.",
+            }
+        ],
+    )
+
+    result = explain_possible_impact(task)
+
+    assert "Known exploited status is confirmed by provided report evidence." in result[
+        "confirmed_facts"
+    ]
+    assert any("can increase urgency" in item for item in result["possible_impacts"])
+    assert "Known exploited status is not confirmed by the provided evidence." not in result[
+        "unknowns"
+    ]
+
+
 def test_known_exploited_true_without_evidence_is_not_claimed_as_confirmed():
     task = base_task(
         risk={"known_exploited": True, "runtime_scope": "production", "reachability": "reachable"},
@@ -197,6 +244,23 @@ def test_empty_or_malformed_input_returns_unknown_context_without_supply_chain()
     assert "Package context is missing or invalid." in result["unknowns"]
     assert "Vulnerability context is missing or invalid." in result["unknowns"]
     assert "supply_chain" not in result["impact_categories"]
+
+
+def test_top_level_malformed_inputs_return_unknown_context_without_raising():
+    for task in (None, [], "", {}):
+        result = explain_possible_impact(task)
+
+        assert result["impact_categories"] == ["unknown"]
+        assert "Input context is missing or malformed." in result["unknowns"]
+        assert "Package context is missing or invalid." in result["unknowns"]
+        assert "Vulnerability context is missing or invalid." in result["unknowns"]
+        assert "Known exploited status is not confirmed by the provided evidence." in result[
+            "unknowns"
+        ]
+        assert (
+            "Human review is required because input context is missing or malformed."
+            in result["human_review_notes"]
+        )
 
 
 def test_unknown_fields_are_called_out_without_inventing_certainty():

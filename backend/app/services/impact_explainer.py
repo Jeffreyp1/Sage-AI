@@ -51,15 +51,26 @@ UNSAFE_DETAIL_PATTERN = re.compile(
     r"(<\s*/?\s*script\b|https?://\S+|\b(?:curl|wget|bash|sh|python|node)\b\s+(?:-|https?://|\S))",
     re.IGNORECASE,
 )
+KNOWN_EXPLOITED_PATTERN = re.compile(
+    r"\b(?:known[-\s]+exploited|actively[-\s]+exploited)\b",
+    re.IGNORECASE,
+)
+NEGATED_KNOWN_EXPLOITED_PATTERN = re.compile(
+    r"\b(?:no|not|never|without)\b[^.?!;]{0,80}\b(?:known[-\s]+exploited|actively[-\s]+exploited)\b"
+    r"|\b(?:known[-\s]+exploited|actively[-\s]+exploited)\b[^.?!;]{0,80}\b(?:not|unknown|unconfirmed|not confirmed|false|absent)\b",
+    re.IGNORECASE,
+)
 
-def explain_possible_impact(task: Mapping[str, object]) -> dict[str, list[str]]:
+
+def explain_possible_impact(task: object) -> dict[str, list[str]]:
     """Return conservative impact context for a remediation task-like dict."""
 
-    package = mapping_value(task.get("package"))
-    vulnerability = mapping_value(task.get("vulnerability"))
-    risk = mapping_value(task.get("risk"))
-    evidence = sequence_value(task.get("evidence"))
-    context_notes = invalid_context_notes(task)
+    task_context = mapping_value(task)
+    package = mapping_value(task_context.get("package"))
+    vulnerability = mapping_value(task_context.get("vulnerability"))
+    risk = mapping_value(task_context.get("risk"))
+    evidence = sequence_value(task_context.get("evidence"))
+    context_notes = invalid_context_notes(task_context)
 
     if has_invalid_core_context(context_notes):
         categories = ["unknown"]
@@ -67,10 +78,10 @@ def explain_possible_impact(task: Mapping[str, object]) -> dict[str, list[str]]:
         categories = classify_impact_categories(package, vulnerability, risk)
     result = {
         "impact_categories": categories,
-        "confirmed_facts": confirmed_facts(task, package, vulnerability, risk, evidence),
+        "confirmed_facts": confirmed_facts(task_context, package, vulnerability, risk, evidence),
         "possible_impacts": possible_impacts(categories, package, vulnerability, risk, evidence),
         "unknowns": unknowns(vulnerability, risk, evidence, context_notes),
-        "human_review_notes": human_review_notes(vulnerability, risk, evidence),
+        "human_review_notes": human_review_notes(vulnerability, risk, evidence, context_notes),
     }
     return sanitize_result(result)
 
@@ -263,12 +274,15 @@ def human_review_notes(
     vulnerability: Mapping[str, object],
     risk: Mapping[str, object],
     evidence: Sequence[object],
+    context_notes: Sequence[str],
 ) -> list[str]:
     notes = [
         "Verify whether the package is used in the relevant runtime path.",
         "Review fixed versions, changelog, and tests before changing dependency versions.",
         "Check whether compensating controls or deployment context reduce practical risk.",
     ]
+    if has_invalid_core_context(context_notes):
+        notes.append("Human review is required because input context is missing or malformed.")
     if known_exploited_confirmed(risk, evidence):
         notes.append("Confirm the known-exploited source and whether the deployed service is exposed.")
     elif risk.get("known_exploited") is True:
@@ -328,8 +342,13 @@ def risk_known_exploited_has_validated_source(risk: Mapping[str, object]) -> boo
 
 
 def mentions_known_exploited(value: str) -> bool:
-    normalized = value.lower()
-    return "known exploited" in normalized or "actively exploited" in normalized
+    for sentence in re.split(r"(?<=[.?!;])\s+", value):
+        if KNOWN_EXPLOITED_PATTERN.search(sentence) is None:
+            continue
+        if NEGATED_KNOWN_EXPLOITED_PATTERN.search(sentence) is not None:
+            continue
+        return True
+    return False
 
 
 def is_supply_chain_context(package: Mapping[str, object]) -> bool:
