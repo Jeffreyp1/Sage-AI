@@ -1,5 +1,6 @@
 """Conservative deterministic impact explanations for remediation tasks."""
 
+import re
 from collections.abc import Mapping, Sequence
 
 from app.services.public_safety import sanitize_public_value
@@ -46,6 +47,18 @@ AVAILABILITY_KEYWORDS = (
 )
 
 UNKNOWN_VALUES = {"", "unknown", "not_evaluated", "not evaluated", "none", "null"}
+UNSAFE_DETAIL_PATTERN = re.compile(
+    r"(<\s*/?\s*script\b|https?://\S+|\b(?:curl|wget|bash|sh|python|node)\b\s+(?:-|https?://|\S))",
+    re.IGNORECASE,
+)
+UNSAFE_DETAIL_MARKERS = (
+    "proof-of-concept",
+    "proof of concept",
+    "exploit code",
+    "exploit-code",
+    "exploit steps",
+    "poc",
+)
 
 
 def explain_possible_impact(task: Mapping[str, object]) -> dict[str, list[str]]:
@@ -55,14 +68,18 @@ def explain_possible_impact(task: Mapping[str, object]) -> dict[str, list[str]]:
     vulnerability = mapping_value(task.get("vulnerability"))
     risk = mapping_value(task.get("risk"))
     evidence = sequence_value(task.get("evidence"))
+    context_notes = invalid_context_notes(task)
 
-    categories = classify_impact_categories(package, vulnerability, risk)
+    if has_invalid_core_context(context_notes):
+        categories = ["unknown"]
+    else:
+        categories = classify_impact_categories(package, vulnerability, risk)
     result = {
         "impact_categories": categories,
         "confirmed_facts": confirmed_facts(task, package, vulnerability, risk, evidence),
-        "possible_impacts": possible_impacts(categories, package, vulnerability, risk),
-        "unknowns": unknowns(vulnerability, risk),
-        "human_review_notes": human_review_notes(vulnerability, risk),
+        "possible_impacts": possible_impacts(categories, package, vulnerability, risk, evidence),
+        "unknowns": unknowns(vulnerability, risk, evidence, context_notes),
+        "human_review_notes": human_review_notes(vulnerability, risk, evidence),
     }
     return sanitize_result(result)
 
@@ -117,7 +134,13 @@ def confirmed_facts(
 
     summary = text_value(vulnerability.get("summary"))
     if summary is not None:
-        facts.append("Vulnerability summary says: %s" % summary)
+        facts.append(
+            safe_fact_sentence(
+                summary,
+                "Vulnerability summary contained unsafe technical detail and was redacted.",
+                "Vulnerability summary says: %s" % summary,
+            )
+        )
 
     fixed_versions = list_text_values(vulnerability.get("fixed_versions"))
     if len(fixed_versions) > 0:
@@ -180,6 +203,7 @@ def possible_impacts(
     package: Mapping[str, object],
     vulnerability: Mapping[str, object],
     risk: Mapping[str, object],
+    evidence: Sequence[object],
 ) -> list[str]:
     package_name = text_value(package.get("name")) or "the affected package"
     severity = text_value(vulnerability.get("severity"))
@@ -212,7 +236,7 @@ def possible_impacts(
         impacts.append(
             "High-severity production findings could increase release or incident-review urgency."
         )
-    if risk.get("known_exploited") is True:
+    if known_exploited_confirmed(risk, evidence):
         impacts.append(
             "Confirmed known exploited status can increase urgency, but local runtime exposure still needs review."
         )
@@ -222,8 +246,10 @@ def possible_impacts(
 def unknowns(
     vulnerability: Mapping[str, object],
     risk: Mapping[str, object],
+    evidence: Sequence[object],
+    context_notes: Sequence[str],
 ) -> list[str]:
-    values = []
+    values = list(context_notes)
     severity = text_value(vulnerability.get("severity"))
     if severity is None or is_unknown(severity):
         values.append("Severity is unknown.")
@@ -233,7 +259,7 @@ def unknowns(
     reachability = text_value(risk.get("reachability"))
     if reachability is None or is_unknown(reachability):
         values.append("Runtime reachability is unknown.")
-    if risk.get("known_exploited") is not True:
+    if not known_exploited_confirmed(risk, evidence):
         values.append("Known exploited status is not confirmed by the provided evidence.")
     fixed_versions = list_text_values(vulnerability.get("fixed_versions"))
     if len(fixed_versions) == 0:
@@ -245,14 +271,17 @@ def unknowns(
 def human_review_notes(
     vulnerability: Mapping[str, object],
     risk: Mapping[str, object],
+    evidence: Sequence[object],
 ) -> list[str]:
     notes = [
         "Verify whether the package is used in the relevant runtime path.",
         "Review fixed versions, changelog, and tests before changing dependency versions.",
         "Check whether compensating controls or deployment context reduce practical risk.",
     ]
-    if risk.get("known_exploited") is True:
+    if known_exploited_confirmed(risk, evidence):
         notes.append("Confirm the known-exploited source and whether the deployed service is exposed.")
+    elif risk.get("known_exploited") is True:
+        notes.append("Review the reported known-exploited flag against a cited advisory or evidence item.")
     if len(list_text_values(vulnerability.get("fixed_versions"))) == 0:
         notes.append("Review upstream advisories for fixed-version status and mitigation notes.")
     return notes
@@ -266,6 +295,15 @@ def evidence_claim_facts(evidence: Sequence[object]) -> list[str]:
         source = text_value(evidence_item.get("source"))
         if claim is None:
             continue
+        if contains_unsafe_detail(claim):
+            if source is None:
+                facts.append("Report evidence contained unsafe technical detail and was redacted.")
+            else:
+                facts.append(
+                    "Report evidence from %s contained unsafe technical detail and was redacted."
+                    % source
+                )
+            continue
         if source is None:
             facts.append("Report evidence states: %s" % claim)
         else:
@@ -277,7 +315,7 @@ def known_exploited_confirmed(
     risk: Mapping[str, object],
     evidence: Sequence[object],
 ) -> bool:
-    if risk.get("known_exploited") is True:
+    if risk_known_exploited_has_validated_source(risk):
         return True
     for item in evidence:
         evidence_item = mapping_value(item)
@@ -287,12 +325,25 @@ def known_exploited_confirmed(
     return False
 
 
+def risk_known_exploited_has_validated_source(risk: Mapping[str, object]) -> bool:
+    if risk.get("known_exploited") is not True:
+        return False
+    source_fields = (
+        "known_exploited_source",
+        "known_exploited_evidence",
+        "known_exploited_reference",
+    )
+    return any(text_value(risk.get(field)) is not None for field in source_fields)
+
+
 def mentions_known_exploited(value: str) -> bool:
     normalized = value.lower()
     return "known exploited" in normalized or "actively exploited" in normalized
 
 
 def is_supply_chain_context(package: Mapping[str, object]) -> bool:
+    if len(package) == 0:
+        return False
     dependency_type = text_value(package.get("dependency_type"))
     is_direct = package.get("is_direct")
     if is_direct is False:
@@ -340,6 +391,42 @@ def searchable_text(
 
 def contains_keyword(text: str, keywords: Sequence[str]) -> bool:
     return any(keyword in text for keyword in keywords)
+
+
+def invalid_context_notes(task: Mapping[str, object]) -> list[str]:
+    notes = []
+    invalid_core = False
+    if not isinstance(task.get("package"), Mapping) or len(mapping_value(task.get("package"))) == 0:
+        invalid_core = True
+        notes.append("Package context is missing or invalid.")
+    if not isinstance(task.get("vulnerability"), Mapping) or len(
+        mapping_value(task.get("vulnerability"))
+    ) == 0:
+        invalid_core = True
+        notes.append("Vulnerability context is missing or invalid.")
+    if "risk" in task and not isinstance(task.get("risk"), Mapping):
+        notes.append("Risk context is malformed.")
+    if "evidence" in task and not isinstance(task.get("evidence"), list | tuple):
+        notes.append("Evidence context is malformed.")
+    if invalid_core:
+        return ["Input context is missing or malformed.", *notes]
+    return notes
+
+
+def has_invalid_core_context(context_notes: Sequence[str]) -> bool:
+    return "Input context is missing or malformed." in context_notes
+
+
+def safe_fact_sentence(value: str, unsafe_message: str, safe_message: str) -> str:
+    if contains_unsafe_detail(value):
+        return unsafe_message
+    return safe_message
+
+
+def contains_unsafe_detail(value: str) -> bool:
+    normalized = value.lower()
+    has_unsafe_marker = any(marker in normalized for marker in UNSAFE_DETAIL_MARKERS)
+    return has_unsafe_marker or UNSAFE_DETAIL_PATTERN.search(value) is not None
 
 
 def sanitize_result(result: dict[str, list[str]]) -> dict[str, list[str]]:
