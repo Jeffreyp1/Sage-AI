@@ -181,13 +181,15 @@ class McpToolHandlers:
                 % (contract.name, validation_error_summary(error))
             ) from error
 
-    def _scan_repo(self, model: BaseModel) -> ScanRepoOutput:
-        request = as_model(model, ScanRepoInput)
+    def _resolve_repo_path(self, requested_path: str | Path) -> Path:
         try:
-            repo_path = resolve_repo_path(request.repo_path, workspace_root=self.workspace_root)
+            return resolve_repo_path(requested_path, workspace_root=self.workspace_root)
         except PathPolicyError as error:
             raise ToolHandlerError(str(error)) from error
 
+    def _scan_repo(self, model: BaseModel) -> ScanRepoOutput:
+        request = as_model(model, ScanRepoInput)
+        repo_path = self._resolve_repo_path(request.repo_path)
         return self._scan_path(
             repo_path,
             offline=request.offline,
@@ -196,11 +198,7 @@ class McpToolHandlers:
 
     def _scan_current_repo(self, model: BaseModel) -> ScanRepoOutput:
         request = as_model(model, ScanCurrentRepoInput)
-        try:
-            repo_path = resolve_repo_path(".", workspace_root=self.workspace_root)
-        except PathPolicyError as error:
-            raise ToolHandlerError(str(error)) from error
-
+        repo_path = self._resolve_repo_path(".")
         return self._scan_path(
             repo_path,
             offline=request.offline,

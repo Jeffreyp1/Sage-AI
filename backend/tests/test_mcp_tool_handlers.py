@@ -350,6 +350,20 @@ def test_scan_repo_rejects_workspace_escape_before_scanning(tmp_path):
         handlers.call_tool("scan_repo", {"repo_path": "../outside"})
 
 
+def test_scan_repo_rejects_missing_repo_before_scanning(tmp_path):
+    workspace = tmp_path / "workspace"
+    storage = workspace / "mcp-reports"
+    workspace.mkdir()
+    handlers = McpToolHandlers(
+        workspace_root=workspace,
+        storage_dir=storage,
+        scan_service=FailingScanService(),
+    )
+
+    with pytest.raises(ToolHandlerError, match="Repository path does not exist"):
+        handlers.call_tool("scan_repo", {"repo_path": "missing-repo"})
+
+
 def test_input_validation_error_does_not_echo_unsafe_extra_field_name(tmp_path):
     workspace = tmp_path / "workspace"
     repo = workspace / "payments-api"
