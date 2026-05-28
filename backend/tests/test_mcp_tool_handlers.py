@@ -819,6 +819,10 @@ def test_validate_ai_output_blocks_uncited_client_ai_claims(tmp_path):
     assert isinstance(validation, ValidateAIOutputOutput)
     assert validation.passed is False
     assert validation.blocked is True
+    assert validation.blocked_by == "sage_ai_output_validator"
+    assert validation.blocked_subject == "client_ai_explanation"
+    assert validation.scan_failed is False
+    assert "blocked the client AI explanation" in validation.user_message
     assert "matching citation" in validation.summary
 
 
@@ -862,6 +866,11 @@ def test_validate_ai_output_blocks_unaudited_generated_action_claims(tmp_path):
     assert isinstance(validation, ValidateAIOutputOutput)
     assert validation.passed is False
     assert validation.blocked is True
+    assert validation.blocked_by == "sage_ai_claim_auditor"
+    assert validation.blocked_subject == "client_ai_explanation"
+    assert validation.scan_failed is False
+    assert "Sage AI's claim auditor blocked" in validation.user_message
+    assert "scan failed" in validation.user_message
     assert validation.validation["errors"] == ["AI output claim audit failed."]
 
 

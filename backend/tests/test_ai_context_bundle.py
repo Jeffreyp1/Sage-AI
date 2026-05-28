@@ -226,6 +226,11 @@ def test_validate_client_ai_output_blocks_unaudited_generated_action_claims():
 
         assert result["passed"] is False
         assert result["blocked"] is True
+        assert result["blocked_by"] == "sage_ai_claim_auditor"
+        assert result["blocked_subject"] == "client_ai_explanation"
+        assert result["scan_failed"] is False
+        assert "blocked the client AI explanation" in result["user_message"]
+        assert "scan failed" in result["user_message"]
         assert "claim audit" in result["summary"]
         assert result["validation"]["errors"] == ["AI output claim audit failed."]
         assert result["validation"]["unsupported_claim_ids"] == []
@@ -240,6 +245,10 @@ def test_validate_client_ai_output_blocks_unsupported_recommendation_field_befor
 
     assert result["passed"] is False
     assert result["blocked"] is True
+    assert result["blocked_by"] == "sage_ai_output_validator"
+    assert result["blocked_subject"] == "client_ai_explanation"
+    assert result["scan_failed"] is False
+    assert "blocked the client AI explanation" in result["user_message"]
     assert result["validation"]["errors"] == ["AI output contained unsupported fields."]
     assert "archive-utils before release" not in repr(result)
 
@@ -318,6 +327,10 @@ def test_validate_client_ai_output_allows_schema_valid_conservative_unknown_with
 
     assert result["passed"] is True
     assert result["blocked"] is False
+    assert result["blocked_by"] is None
+    assert result["blocked_subject"] == "client_ai_explanation"
+    assert result["scan_failed"] is False
+    assert "validated the client AI explanation" in result["user_message"]
     assert result["validation"]["warnings"] == [
         "AI output did not include auditable claims."
     ]

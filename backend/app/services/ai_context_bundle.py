@@ -37,6 +37,9 @@ ALLOWED_AI_CLAIM_CHECK_FIELDS = {
     "evidence_ids",
     "rationale",
 }
+CLAIM_AUDIT_ERROR = "AI output claim audit failed."
+UNSAFE_TEXT_ERROR = "AI response contained unsafe text."
+BLOCKED_SUBJECT = "client_ai_explanation"
 
 
 class AIOutputParseError(ValueError):
@@ -95,13 +98,7 @@ def validate_client_ai_output(
             validation_dict,
             audit_ai_claims(response.to_dict()),
         )
-    return {
-        "passed": validation_dict.get("valid") is True
-        and validation_dict.get("blocked") is not True,
-        "blocked": validation_dict.get("blocked") is True,
-        "summary": validation_summary(validation_dict),
-        "validation": validation_dict,
-    }
+    return validation_result(validation_dict)
 
 
 def compact_finding(task: Mapping[str, object]) -> dict[str, object]:
@@ -126,11 +123,8 @@ def compact_finding(task: Mapping[str, object]) -> dict[str, object]:
 
 
 def blocked_validation_result(message: str) -> dict[str, object]:
-    return {
-        "passed": False,
-        "blocked": True,
-        "summary": "FAIL AI output validation: %s" % message,
-        "validation": {
+    return validation_result(
+        {
             "valid": False,
             "blocked": True,
             "errors": [message],
@@ -138,8 +132,8 @@ def blocked_validation_result(message: str) -> dict[str, object]:
             "invalid_citation_ids": [],
             "unsupported_claim_ids": [],
             "mutated_fields": [],
-        },
-    }
+        }
+    )
 
 
 def unsupported_ai_output_fields(value: Mapping[str, object]) -> list[str]:
@@ -382,6 +376,65 @@ def validation_summary(validation: Mapping[str, object]) -> str:
         if isinstance(first_error, str):
             return "FAIL AI output validation: %s" % first_error
     return "FAIL AI output validation"
+
+
+def validation_result(validation: Mapping[str, object]) -> dict[str, object]:
+    validation_dict = mapping_value(validation)
+    blocked = validation_dict.get("blocked") is True
+    passed = validation_dict.get("valid") is True and not blocked
+    blocker = validation_blocker(validation_dict) if blocked else None
+    return {
+        "passed": passed,
+        "blocked": blocked,
+        "blocked_by": blocker,
+        "blocked_subject": BLOCKED_SUBJECT,
+        "scan_failed": False,
+        "user_message": validation_user_message(blocked=blocked, blocked_by=blocker),
+        "summary": validation_summary(validation_dict),
+        "validation": validation_dict,
+    }
+
+
+def validation_blocker(validation: Mapping[str, object]) -> str:
+    errors = string_list_from_value(validation.get("errors"))
+    if CLAIM_AUDIT_ERROR in errors:
+        return "sage_ai_claim_auditor"
+    if UNSAFE_TEXT_ERROR in errors:
+        return "sage_ai_safety_filter"
+    return "sage_ai_output_validator"
+
+
+def validation_user_message(*, blocked: bool, blocked_by: str | None) -> str:
+    if not blocked:
+        return "Sage AI validated the client AI explanation against the evidence bundle."
+    if blocked_by == "sage_ai_claim_auditor":
+        return (
+            "Sage AI's claim auditor blocked the client AI explanation. "
+            "This does not mean the scan failed; it means the explanation was not "
+            "fully supported by the evidence bundle."
+        )
+    if blocked_by == "sage_ai_safety_filter":
+        return (
+            "Sage AI's safety filter blocked the client AI explanation. "
+            "This does not mean the scan failed; it means the explanation contained "
+            "unsafe security wording."
+        )
+    return (
+        "Sage AI's output validator blocked the client AI explanation. "
+        "This does not mean the scan failed; it means the explanation did not satisfy "
+        "Sage AI's evidence and schema rules."
+    )
+
+
+def string_list_from_value(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    output: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            output.append(item)
+    return output
 
 
 def required_string(value: Mapping[str, object], key: str) -> str:

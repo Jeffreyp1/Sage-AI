@@ -352,6 +352,10 @@ class McpToolHandlers:
             task_id=safe_text(finding.task_id),
             passed=bool(result["passed"]),
             blocked=bool(result["blocked"]),
+            blocked_by=safe_optional_text(result.get("blocked_by")),
+            blocked_subject=safe_text(result.get("blocked_subject")),
+            scan_failed=bool(result.get("scan_failed")),
+            user_message=safe_text(result.get("user_message")),
             summary=str(result["summary"]),
             validation=mapping_value(result.get("validation")),
         )

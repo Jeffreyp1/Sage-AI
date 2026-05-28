@@ -171,6 +171,19 @@ class ValidateAIOutputOutput(ContractModel):
     task_id: str
     passed: bool
     blocked: bool
+    blocked_by: str | None = Field(
+        default=None,
+        description="Sage validator component that blocked the client AI explanation.",
+    )
+    blocked_subject: str = Field(
+        description="Subject that was blocked, usually the client AI explanation.",
+    )
+    scan_failed: bool = Field(
+        description="False when the scan is usable and only the client AI explanation failed validation.",
+    )
+    user_message: str = Field(
+        description="Plain-English validation result suitable for showing to users.",
+    )
     summary: str
     validation: dict[str, object]
 
