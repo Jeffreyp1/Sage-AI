@@ -1,6 +1,6 @@
 """Client-AI context bundles and output validation."""
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from app.ai.contracts import (
     AIFindingSummaryResponse,
@@ -9,21 +9,47 @@ from app.ai.contracts import (
     validate_finding_summary_response,
 )
 from app.services.ai_summary_service import build_finding_summary_request
+from app.services.ai_output_safety import unsafe_client_output_markers
 from app.services.public_safety import sanitize_public_text, sanitize_public_value
+from app.services.rag_types import EvidenceChunk
 
 
 AI_CONTEXT_BUNDLE_SCHEMA_VERSION = "vulnsage.ai_context_bundle.v1"
+ALLOWED_AI_OUTPUT_FIELDS = {
+    "finding_id",
+    "package_name",
+    "vulnerability_id",
+    "priority",
+    "risk_score",
+    "summary",
+    "explanation",
+    "citations",
+    "claim_checks",
+    "provider_name",
+    "errors",
+}
+ALLOWED_AI_CITATION_FIELDS = {"claim_id", "evidence_id", "quote", "note"}
+ALLOWED_AI_CLAIM_CHECK_FIELDS = {
+    "claim_id",
+    "claim",
+    "disposition",
+    "evidence_ids",
+    "rationale",
+}
 
 
 class AIOutputParseError(ValueError):
     """Raised when a client AI response does not match the expected shape."""
 
 
-def build_ai_context_bundle(task: Mapping[str, object]) -> dict[str, object]:
+def build_ai_context_bundle(
+    task: Mapping[str, object],
+    retrieved_chunks: Iterable[EvidenceChunk] = (),
+) -> dict[str, object]:
     """Build a focused, safe case file for a client-provided AI assistant."""
 
     safe_task = mapping_value(sanitize_public_value(dict(task)))
-    request = build_finding_summary_request(safe_task, [])
+    request = build_finding_summary_request(safe_task, retrieved_chunks)
     request_dict = request.to_dict()
     return {
         "schema_version": AI_CONTEXT_BUNDLE_SCHEMA_VERSION,
@@ -40,28 +66,23 @@ def build_ai_context_bundle(task: Mapping[str, object]) -> dict[str, object]:
 def validate_client_ai_output(
     task: Mapping[str, object],
     ai_output: Mapping[str, object],
+    retrieved_chunks: Iterable[EvidenceChunk] = (),
 ) -> dict[str, object]:
     safe_task = mapping_value(sanitize_public_value(dict(task)))
-    request = build_finding_summary_request(safe_task, [])
+    request = build_finding_summary_request(safe_task, retrieved_chunks)
+    unknown_fields = unsupported_ai_output_fields(ai_output)
+    if len(unknown_fields) > 0:
+        return blocked_validation_result("AI output contained unsupported fields.")
+
+    unsafe_markers = unsafe_client_output_markers(ai_output)
+    if len(unsafe_markers) > 0:
+        return blocked_validation_result("AI response contained unsafe text.")
 
     try:
         response = parse_ai_output(ai_output)
     except AIOutputParseError as error:
         message = sanitize_public_text(str(error))
-        return {
-            "passed": False,
-            "blocked": True,
-            "summary": "FAIL AI output validation: %s" % message,
-            "validation": {
-                "valid": False,
-                "blocked": True,
-                "errors": [message],
-                "warnings": [],
-                "invalid_citation_ids": [],
-                "unsupported_claim_ids": [],
-                "mutated_fields": [],
-            },
-        }
+        return blocked_validation_result(message)
 
     validation = validate_finding_summary_response(request, response)
     validation_dict = public_validation_dict(validation.to_dict())
@@ -92,6 +113,67 @@ def compact_finding(task: Mapping[str, object]) -> dict[str, object]:
             }
         )
     )
+
+
+def blocked_validation_result(message: str) -> dict[str, object]:
+    return {
+        "passed": False,
+        "blocked": True,
+        "summary": "FAIL AI output validation: %s" % message,
+        "validation": {
+            "valid": False,
+            "blocked": True,
+            "errors": [message],
+            "warnings": [],
+            "invalid_citation_ids": [],
+            "unsupported_claim_ids": [],
+            "mutated_fields": [],
+        },
+    }
+
+
+def unsupported_ai_output_fields(value: Mapping[str, object]) -> list[str]:
+    fields: list[str] = []
+    for key in value:
+        key_text = str(key)
+        if key_text not in ALLOWED_AI_OUTPUT_FIELDS:
+            fields.append(key_text)
+
+    fields.extend(
+        unsupported_nested_fields(
+            value.get("citations"),
+            allowed_fields=ALLOWED_AI_CITATION_FIELDS,
+            path="citations",
+        )
+    )
+    fields.extend(
+        unsupported_nested_fields(
+            value.get("claim_checks"),
+            allowed_fields=ALLOWED_AI_CLAIM_CHECK_FIELDS,
+            path="claim_checks",
+        )
+    )
+    return fields
+
+
+def unsupported_nested_fields(
+    value: object,
+    *,
+    allowed_fields: set[str],
+    path: str,
+) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    fields: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            continue
+        for key in item:
+            key_text = str(key)
+            if key_text not in allowed_fields:
+                fields.append("%s[%s].%s" % (path, index, key_text))
+    return fields
 
 
 def citation_rules() -> list[str]:

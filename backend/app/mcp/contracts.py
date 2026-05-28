@@ -11,9 +11,12 @@ from app.schemas.report import RemediationTaskSchema, ScanSummarySchema
 
 MCP_TOOL_NAMES = (
     "scan_repo",
+    "scan_current_repo",
     "list_findings",
     "get_finding",
     "get_finding_evidence",
+    "get_vulnerability_brief",
+    "explain_top_risks",
     "get_remediation_context",
     "get_ai_context_bundle",
     "validate_ai_output",
@@ -46,6 +49,11 @@ class ScanRepoInput(ContractModel):
         max_length=MAX_INPUT_STRING_LENGTH,
     )
     offline: bool = Field(default=False, description="Disable external vulnerability lookups.")
+    max_findings: int = Field(default=10, ge=1, le=MAX_FINDINGS_LIMIT)
+
+
+class ScanCurrentRepoInput(ContractModel):
+    offline: bool = Field(default=True, description="Disable external vulnerability lookups.")
     max_findings: int = Field(default=10, ge=1, le=MAX_FINDINGS_LIMIT)
 
 
@@ -92,6 +100,14 @@ class FindingInput(ContractModel):
     task_id: str = Field(max_length=MAX_INPUT_STRING_LENGTH)
 
 
+class AIContextBundleInput(FindingInput):
+    include_rag: bool = Field(
+        default=False,
+        description="Include retrieved report evidence chunks in the AI context bundle.",
+    )
+    top_k: int = Field(default=5, ge=1, le=10)
+
+
 class FindingOutput(ContractModel):
     scan_id: str
     finding: RemediationTaskSchema
@@ -101,6 +117,28 @@ class FindingEvidenceOutput(ContractModel):
     scan_id: str
     task_id: str
     evidence: list[dict[str, str]]
+
+
+class VulnerabilityBriefInput(FindingInput):
+    pass
+
+
+class GetVulnerabilityBriefOutput(ContractModel):
+    scan_id: str
+    task_id: str
+    brief: dict[str, object]
+    evidence: list[dict[str, str]]
+    risk_rationale: list[str] = Field(default_factory=list)
+
+
+class ExplainTopRisksInput(ContractModel):
+    scan_id: str = Field(max_length=MAX_INPUT_STRING_LENGTH)
+    limit: int = Field(default=5, ge=1, le=MAX_FINDINGS_LIMIT)
+
+
+class ExplainTopRisksOutput(ContractModel):
+    scan_id: str
+    findings: list[dict[str, object]]
 
 
 class RemediationContextOutput(ContractModel):
@@ -121,6 +159,11 @@ class ValidateAIOutputInput(ContractModel):
     scan_id: str = Field(max_length=MAX_INPUT_STRING_LENGTH)
     task_id: str = Field(max_length=MAX_INPUT_STRING_LENGTH)
     ai_output: dict[str, object]
+    include_rag: bool = Field(
+        default=False,
+        description="Validate against retrieved report evidence chunks too.",
+    )
+    top_k: int = Field(default=5, ge=1, le=10)
 
 
 class ValidateAIOutputOutput(ContractModel):
@@ -160,6 +203,12 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             output_model=ScanRepoOutput,
         ),
         ToolContract(
+            name="scan_current_repo",
+            description="Scan the configured workspace root without requiring a repo_path argument.",
+            input_model=ScanCurrentRepoInput,
+            output_model=ScanRepoOutput,
+        ),
+        ToolContract(
             name="list_findings",
             description="List compact findings for an existing scan.",
             input_model=ListFindingsInput,
@@ -178,6 +227,18 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             output_model=FindingEvidenceOutput,
         ),
         ToolContract(
+            name="get_vulnerability_brief",
+            description="Return a concise structured brief for one finding using stored report facts.",
+            input_model=VulnerabilityBriefInput,
+            output_model=GetVulnerabilityBriefOutput,
+        ),
+        ToolContract(
+            name="explain_top_risks",
+            description="Return a deterministic compact summary of top stored findings.",
+            input_model=ExplainTopRisksInput,
+            output_model=ExplainTopRisksOutput,
+        ),
+        ToolContract(
             name="get_remediation_context",
             description="Return compact AI-safe context for explaining one finding.",
             input_model=FindingInput,
@@ -186,7 +247,7 @@ def tool_contracts() -> tuple[ToolContract, ...]:
         ToolContract(
             name="get_ai_context_bundle",
             description="Return a client-AI case file with evidence IDs, rules, prompt, and schema.",
-            input_model=FindingInput,
+            input_model=AIContextBundleInput,
             output_model=AIContextBundleOutput,
         ),
         ToolContract(

@@ -1,13 +1,18 @@
 from app.mcp.contracts import (
+    AIContextBundleInput,
     AIContextBundleOutput,
+    ExplainTopRisksInput,
     FindingInput,
+    GetVulnerabilityBriefOutput,
     MCP_TOOL_NAMES,
     UNSAFE_TOOL_NAME_FRAGMENTS,
     ValidateAIOutputInput,
     ValidateReportInput,
+    VulnerabilityBriefInput,
     ListFindingsInput,
     MAX_FINDINGS_LIMIT,
     ScanRepoInput,
+    ScanCurrentRepoInput,
     ToolContract,
     tool_contracts,
 )
@@ -20,8 +25,11 @@ def test_mcp_contract_exposes_only_safe_initial_tools():
 
     assert names == list(MCP_TOOL_NAMES)
     assert "scan_repo" in names
+    assert "scan_current_repo" in names
     assert "list_findings" in names
     assert "get_finding_evidence" in names
+    assert "get_vulnerability_brief" in names
+    assert "explain_top_risks" in names
     assert "get_remediation_context" in names
     assert "get_ai_context_bundle" in names
     assert "validate_ai_output" in names
@@ -51,6 +59,16 @@ def test_scan_repo_input_defaults_are_local_and_bounded():
     assert request.max_findings == 10
 
 
+def test_scan_current_repo_defaults_to_offline_and_bounded():
+    request = ScanCurrentRepoInput()
+    schema = ScanCurrentRepoInput.model_json_schema()
+
+    assert request.offline is True
+    assert request.max_findings == 10
+    assert schema["properties"]["max_findings"]["maximum"] == MAX_FINDINGS_LIMIT
+    assert "repo_path" not in schema["properties"]
+
+
 def test_scan_repo_input_uses_clear_repo_path_argument():
     request = ScanRepoInput.model_validate({"repo_path": "demo-repos/payments-api"})
     schema = ScanRepoInput.model_json_schema()
@@ -77,6 +95,17 @@ def test_list_findings_schema_exposes_limit_maximum():
     assert schema["properties"]["limit"]["maximum"] == MAX_FINDINGS_LIMIT
 
 
+def test_explain_top_risks_limit_rejects_above_contract_bound():
+    try:
+        ExplainTopRisksInput(scan_id="scan_123", limit=1000)
+    except ValidationError as error:
+        message = str(error)
+    else:
+        raise AssertionError("ExplainTopRisksInput should reject limits above the contract bound")
+
+    assert "less than or equal to 50" in message
+
+
 def test_mcp_string_inputs_expose_max_length_bounds():
     for contract in tool_contracts():
         schema = contract.input_model.model_json_schema()
@@ -90,6 +119,8 @@ def test_mcp_string_inputs_reject_overlong_values():
 
     for model_type, payload in (
         (ScanRepoInput, {"repo_path": long_value}),
+        (VulnerabilityBriefInput, {"scan_id": "scan-test", "task_id": long_value}),
+        (ExplainTopRisksInput, {"scan_id": long_value}),
         (ListFindingsInput, {"scan_id": long_value}),
         (FindingInput, {"scan_id": "scan-test", "task_id": long_value}),
         (ValidateAIOutputInput, {"scan_id": "scan-test", "task_id": long_value, "ai_output": {}}),
@@ -109,3 +140,46 @@ def test_ai_context_bundle_output_exposes_ai_request_and_prompt_contract():
     assert "bundle" in schema["properties"]
     assert "scan_id" in schema["properties"]
     assert "task_id" in schema["properties"]
+
+
+def test_vulnerability_brief_output_exposes_structured_facts_and_evidence():
+    schema = GetVulnerabilityBriefOutput.model_json_schema()
+
+    assert "brief" in schema["properties"]
+    assert "evidence" in schema["properties"]
+    assert "risk_rationale" in schema["properties"]
+
+
+def test_ai_context_bundle_input_supports_optional_rag_retrieval():
+    request = AIContextBundleInput.model_validate(
+        {
+            "scan_id": "scan-test",
+            "task_id": "task-archive-utils",
+            "include_rag": True,
+            "top_k": 3,
+        }
+    )
+    schema = AIContextBundleInput.model_json_schema()
+
+    assert request.include_rag is True
+    assert request.top_k == 3
+    assert schema["properties"]["top_k"]["minimum"] == 1
+    assert schema["properties"]["top_k"]["maximum"] == 10
+
+
+def test_validate_ai_output_input_supports_optional_rag_retrieval():
+    request = ValidateAIOutputInput.model_validate(
+        {
+            "scan_id": "scan-test",
+            "task_id": "task-archive-utils",
+            "ai_output": {},
+            "include_rag": True,
+            "top_k": 3,
+        }
+    )
+    schema = ValidateAIOutputInput.model_json_schema()
+
+    assert request.include_rag is True
+    assert request.top_k == 3
+    assert schema["properties"]["top_k"]["minimum"] == 1
+    assert schema["properties"]["top_k"]["maximum"] == 10

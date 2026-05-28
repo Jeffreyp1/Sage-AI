@@ -16,7 +16,7 @@ from app.services.trace_service import redact_secret_text
 
 
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_NAME = "vulnsage-ai"
+SERVER_NAME = "sage-ai"
 SERVER_TITLE = "Sage AI Vulnerability Triage"
 SERVER_VERSION = "0.1.0"
 
