@@ -9,4 +9,3 @@ router.post("/api/receipts/upload", async (request, response) => {
 });
 
 export default router;
-

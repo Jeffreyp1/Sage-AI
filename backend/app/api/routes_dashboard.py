@@ -25,4 +25,3 @@ def dashboard_summary(db: Session = Depends(get_db)) -> dict:
         "deduped_remediation_tasks": task_count,
         "release_blockers": release_blockers,
     }
-
