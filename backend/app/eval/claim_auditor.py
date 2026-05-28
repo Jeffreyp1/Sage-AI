@@ -48,6 +48,32 @@ OVERCONFIDENT_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+LOW_SIGNAL_COVERAGE_WORDS = {
+    "and",
+    "are",
+    "based",
+    "because",
+    "before",
+    "cited",
+    "evidence",
+    "for",
+    "from",
+    "has",
+    "have",
+    "human",
+    "manual",
+    "needs",
+    "required",
+    "requires",
+    "review",
+    "that",
+    "the",
+    "this",
+    "unknown",
+    "was",
+    "were",
+    "with",
+}
 
 
 @dataclass(frozen=True)
@@ -88,8 +114,8 @@ def audit_ai_claims(ai_output: object) -> dict[str, object]:
     if len(claims) == 0:
         warnings.append("AI output did not include auditable claims.")
         findings.extend(missing_auditable_claim_findings(ai_output))
-    elif not has_supported_concrete_claim(claims):
-        findings.extend(unaudited_factual_or_action_findings(ai_output))
+    else:
+        findings.extend(unaudited_factual_or_action_findings(ai_output, claims))
 
     findings.extend(unsafe_wording_findings(ai_output))
     findings.extend(overconfident_language_findings(ai_output))
@@ -296,22 +322,17 @@ def missing_auditable_claim_findings(ai_output: Mapping[object, object]) -> list
     return findings
 
 
-def has_supported_concrete_claim(claims: list[AuditClaim]) -> bool:
-    for claim in claims:
-        if claim.disposition not in CONCRETE_DISPOSITIONS:
-            continue
-        if len(claim.evidence_ids) == 0:
-            continue
-        return True
-    return False
-
-
-def unaudited_factual_or_action_findings(ai_output: Mapping[object, object]) -> list[AuditFinding]:
+def unaudited_factual_or_action_findings(
+    ai_output: Mapping[object, object],
+    claims: list[AuditClaim],
+) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
     for path, text in generated_claim_language_with_paths(ai_output):
         if is_conservative_unknown_prose(text):
             continue
         if not has_factual_or_action_signal(text):
+            continue
+        if is_supported_by_concrete_claim(text, claims):
             continue
         findings.append(
             AuditFinding(
@@ -324,14 +345,71 @@ def unaudited_factual_or_action_findings(ai_output: Mapping[object, object]) -> 
     return findings
 
 
+def is_supported_by_concrete_claim(value: str, claims: list[AuditClaim]) -> bool:
+    normalized_value = normalized_claim_language(value)
+    if normalized_value == "":
+        return False
+
+    for claim in claims:
+        if claim.disposition not in CONCRETE_DISPOSITIONS:
+            continue
+        if len(claim.evidence_ids) == 0:
+            continue
+
+        normalized_claim = normalized_claim_language(claim.text)
+        if normalized_claim == "":
+            continue
+        if normalized_value in normalized_claim:
+            return True
+        if has_action_signal(value) or has_action_signal(claim.text):
+            continue
+        if normalized_claim in normalized_value:
+            return True
+        if has_strong_claim_token_overlap(normalized_value, normalized_claim):
+            return True
+    return False
+
+
+def normalized_claim_language(value: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.casefold()).split())
+
+
+def has_strong_claim_token_overlap(value: str, claim: str) -> bool:
+    value_tokens = set(claim_coverage_tokens(value))
+    claim_tokens = set(claim_coverage_tokens(claim))
+    if len(value_tokens) == 0 or len(claim_tokens) == 0:
+        return False
+
+    common_tokens = value_tokens & claim_tokens
+    return len(common_tokens) >= 3 and len(common_tokens) / len(claim_tokens) >= 0.65
+
+
+def claim_coverage_tokens(value: str) -> list[str]:
+    tokens: list[str] = []
+    for token in value.split():
+        if len(token) < 3 or token in LOW_SIGNAL_COVERAGE_WORDS:
+            continue
+        tokens.append(stem_claim_token(token))
+    return tokens
+
+
+def stem_claim_token(value: str) -> str:
+    if value.endswith("ed") and len(value) > 5:
+        return value[:-1]
+    if value.endswith("s") and len(value) > 4:
+        return value[:-1]
+    return value
+
+
 def has_factual_or_action_signal(value: str) -> bool:
     has_factual_signal = any(
         pattern.search(value) is not None for pattern in FACTUAL_PROSE_PATTERNS
     )
-    has_action_signal = any(
-        pattern.search(value) is not None for pattern in ACTION_PROSE_PATTERNS
-    )
-    return has_factual_signal or has_action_signal
+    return has_factual_signal or has_action_signal(value)
+
+
+def has_action_signal(value: str) -> bool:
+    return any(pattern.search(value) is not None for pattern in ACTION_PROSE_PATTERNS)
 
 
 def is_conservative_unknown_prose(value: str) -> bool:

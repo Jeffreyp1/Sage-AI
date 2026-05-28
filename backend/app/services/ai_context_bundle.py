@@ -66,11 +66,14 @@ def build_ai_context_bundle(
 
 def validate_client_ai_output(
     task: Mapping[str, object],
-    ai_output: Mapping[str, object],
+    ai_output: object,
     retrieved_chunks: Iterable[EvidenceChunk] = (),
 ) -> dict[str, object]:
     safe_task = mapping_value(sanitize_public_value(dict(task)))
     request = build_finding_summary_request(safe_task, retrieved_chunks)
+    if not isinstance(ai_output, Mapping):
+        return blocked_validation_result("AI output must be a JSON object.")
+
     unknown_fields = unsupported_ai_output_fields(ai_output)
     if len(unknown_fields) > 0:
         return blocked_validation_result("AI output contained unsupported fields.")

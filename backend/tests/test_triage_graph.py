@@ -27,6 +27,30 @@ def test_triage_graph_blocks_unaudited_generated_action_claims() -> None:
     assert "Client AI output validation blocked human approval." in state.blocked_reasons
 
 
+def test_triage_graph_blocks_mixed_supported_claim_and_unaudited_action() -> None:
+    graph = TriageGraph()
+    task = remediation_task()
+
+    state = graph.run_with_client_ai(
+        remediation_task=task,
+        evidence_chunks=evidence_chunks(),
+        ai_output=mixed_supported_claim_and_unaudited_action_output(task),
+    )
+
+    validation_node = [
+        result for result in state.node_results if result.node_name == "client_ai_validation"
+    ][0]
+
+    assert state.status == "blocked"
+    assert state.approved is False
+    assert validation_node.validation_status == "blocked"
+    assert validation_node.output["blocked"] is True
+    assert validation_node.output["validation"]["errors"] == [
+        "AI output claim audit failed."
+    ]
+    assert "Client AI output validation blocked human approval." in state.blocked_reasons
+
+
 def test_triage_graph_allows_conservative_unknown_without_action_claims() -> None:
     graph = TriageGraph()
     task = remediation_task()
@@ -67,6 +91,24 @@ def unaudited_action_output(task: dict[str, object]) -> dict[str, object]:
         "claim_checks": [],
         "provider_name": "client-ai",
     }
+
+
+def mixed_supported_claim_and_unaudited_action_output(
+    task: dict[str, object],
+) -> dict[str, object]:
+    output = unaudited_action_output(task)
+    bundle = build_ai_context_bundle(task, retrieved_chunks=evidence_chunks())
+    evidence_id = bundle["ai_request"]["evidence"][0]["id"]
+    output["citations"] = [{"claim_id": "claim-1", "evidence_id": evidence_id}]
+    output["claim_checks"] = [
+        {
+            "claim_id": "claim-1",
+            "claim": "archive-utils@1.4.0 is installed in package-lock.json.",
+            "disposition": "fact",
+            "evidence_ids": [evidence_id],
+        }
+    ]
+    return output
 
 
 def remediation_task() -> dict[str, object]:

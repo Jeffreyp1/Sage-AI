@@ -267,6 +267,24 @@ def test_validate_client_ai_output_blocks_recommendation_like_rationale_without_
     assert result["validation"]["errors"] == ["AI output claim audit failed."]
 
 
+def test_validate_client_ai_output_blocks_mixed_supported_claim_and_unaudited_action():
+    task = remediation_task_fixture()
+    output = valid_client_ai_output(task)
+    output["summary"] = "Upgrade archive-utils before release; exploitability is unknown."
+    output["explanation"] = "Exploitability is unknown and needs human review."
+    output["claim_checks"][0]["claim"] = (
+        "archive-utils@1.4.0 is installed in package-lock.json."
+    )
+
+    result = validate_client_ai_output(task, output)
+
+    assert result["passed"] is False
+    assert result["blocked"] is True
+    assert result["validation"]["errors"] == ["AI output claim audit failed."]
+    assert result["validation"]["unsupported_claim_ids"] == []
+    assert "archive-utils before release" not in repr(result)
+
+
 def test_validate_client_ai_output_rejects_empty_ai_output_at_schema_boundary():
     result = validate_client_ai_output(remediation_task_fixture(), {})
 
@@ -275,6 +293,17 @@ def test_validate_client_ai_output_rejects_empty_ai_output_at_schema_boundary():
     assert result["validation"]["errors"] == [
         "AI output finding_id must be a non-empty string."
     ]
+
+
+def test_validate_client_ai_output_blocks_non_object_ai_output_without_raising():
+    for output in ([], "text", None):
+        result = validate_client_ai_output(remediation_task_fixture(), output)
+
+        assert result["passed"] is False
+        assert result["blocked"] is True
+        assert result["validation"]["errors"] == ["AI output must be a JSON object."]
+        assert "/Users/" not in repr(result)
+        assert "malicious payload" not in repr(result)
 
 
 def test_validate_client_ai_output_allows_schema_valid_conservative_unknown_without_claims():

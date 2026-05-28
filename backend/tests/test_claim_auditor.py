@@ -4,9 +4,7 @@ from app.eval.claim_auditor import audit_ai_claims
 def cited_output():
     return {
         "summary": "archive-utils may be reachable based on the cited import evidence.",
-        "recommendation": (
-            "The fixed version appears to be 2.2.0. This needs human review before release."
-        ),
+        "recommendation": "Exploitability is unknown and needs human review.",
         "citations": [
             {"claim_id": "claim-1", "evidence_id": "ev-lockfile"},
             {"claim_id": "claim-2", "evidence_id": "ev-import"},
@@ -174,6 +172,35 @@ def test_auditor_blocks_unknown_plus_advisory_prose_in_all_generated_fields():
         assert result["passed"] is False
         assert "missing_auditable_claims" in finding_codes(result)
         assert any(finding["path"] == field for finding in result["findings"])
+
+
+def test_auditor_blocks_unsupported_advisory_prose_alongside_supported_claims():
+    text = "Upgrade archive-utils before release; exploitability is unknown."
+
+    cases = [
+        ("summary", lambda output: output.update({"summary": text}), "summary"),
+        ("explanation", lambda output: output.update({"explanation": text}), "explanation"),
+        (
+            "recommendation",
+            lambda output: output.update({"recommendation": text}),
+            "recommendation",
+        ),
+        (
+            "rationale",
+            lambda output: output["claims"][0].update({"rationale": text}),
+            "claims[0].rationale",
+        ),
+    ]
+
+    for _, mutate, expected_path in cases:
+        output = cited_output()
+        mutate(output)
+
+        result = audit_ai_claims(output)
+
+        assert result["passed"] is False
+        assert "missing_auditable_claims" in finding_codes(result)
+        assert any(finding["path"] == expected_path for finding in result["findings"])
 
 
 def test_auditor_allows_conservative_unknown_prose_with_no_claims():
