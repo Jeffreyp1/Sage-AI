@@ -116,6 +116,9 @@ cd backend
 .venv/bin/python -m pytest
 ```
 
+Live/manual scan testing should use only owned or explicitly authorized
+repositories. See [Owned Repository Testing](docs/owned-repo-testing.md).
+
 ## Current MVP Status
 
 - FastAPI health endpoint
