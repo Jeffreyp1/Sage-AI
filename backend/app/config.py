@@ -11,7 +11,7 @@ except ImportError:  # pragma: no cover - exercised only before dependencies are
 
 
 class Settings(BaseSettings):
-    app_name: str = "VulnSage AI"
+    app_name: str = "Sage AI"
     environment: str = "local"
     database_url: str = "postgresql+psycopg://vulnsage:vulnsage@localhost:5432/vulnsage"
     osv_api_url: str = "https://api.osv.dev/v1/query"

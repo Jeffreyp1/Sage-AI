@@ -11,7 +11,6 @@ router = APIRouter(tags=["health"])
 def health() -> dict:
     return {
         "status": "ok",
-        "service": "vulnsage-ai-backend",
+        "service": "sage-ai-backend",
         "version": __version__,
     }
-

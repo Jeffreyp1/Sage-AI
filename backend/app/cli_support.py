@@ -1,4 +1,4 @@
-"""Shared helpers for VulnSage CLI commands."""
+"""Shared helpers for Sage AI CLI commands."""
 
 import json
 from collections.abc import Mapping

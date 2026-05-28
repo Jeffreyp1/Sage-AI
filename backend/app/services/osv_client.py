@@ -48,7 +48,7 @@ class OsvClient:
             method="POST",
             headers={
                 "Content-Type": "application/json",
-                "User-Agent": "vulnsage-ai/0.1",
+                "User-Agent": "sage-ai/0.1",
             },
         )
         try:

@@ -1,4 +1,4 @@
-"""SDK-free MCP-ready tool handlers for local VulnSage scans."""
+"""SDK-free MCP-ready tool handlers for local Sage AI scans."""
 
 from __future__ import annotations
 

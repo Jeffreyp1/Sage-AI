@@ -70,7 +70,7 @@ def test_initialize_returns_tools_capability_and_server_info():
     result = response["result"]
     assert result["protocolVersion"] == "2025-06-18"
     assert result["capabilities"] == {"tools": {"listChanged": False}}
-    assert result["serverInfo"]["name"] == "vulnsage-ai"
+    assert result["serverInfo"]["name"] == "sage-ai"
     assert "defensive" in result["instructions"].lower()
 
 

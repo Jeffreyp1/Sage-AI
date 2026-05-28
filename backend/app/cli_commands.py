@@ -1,4 +1,4 @@
-"""Command handlers for the VulnSage CLI."""
+"""Command handlers for the Sage AI CLI."""
 
 import argparse
 import json

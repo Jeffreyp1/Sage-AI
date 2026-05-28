@@ -1,4 +1,4 @@
-"""Command line interface for VulnSage AI."""
+"""Command line interface for Sage AI."""
 
 import argparse
 import sys

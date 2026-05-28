@@ -1,4 +1,4 @@
-"""Initial VulnSage AI schema.
+"""Initial Sage AI schema.
 
 Revision ID: 0001_initial_schema
 Revises:
