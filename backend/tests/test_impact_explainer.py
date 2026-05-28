@@ -103,6 +103,72 @@ def test_negated_known_exploited_evidence_does_not_confirm_or_add_urgency():
         ]
 
 
+def test_negated_risk_known_exploited_evidence_does_not_confirm_or_add_urgency():
+    task = base_task(
+        risk={
+            "known_exploited": True,
+            "runtime_scope": "production",
+            "reachability": "reachable",
+            "known_exploited_evidence": "No known exploited activity has been observed.",
+        },
+    )
+
+    result = explain_possible_impact(task)
+    joined_result = " ".join(flatten_result(result))
+
+    assert "Known exploited status is confirmed by provided report evidence." not in result[
+        "confirmed_facts"
+    ]
+    assert "Confirmed known exploited status can increase urgency" not in joined_result
+    assert "Known exploited status is not confirmed by the provided evidence." in result[
+        "unknowns"
+    ]
+
+
+def test_negated_risk_known_exploited_source_does_not_confirm_or_add_urgency():
+    task = base_task(
+        risk={
+            "known_exploited": True,
+            "runtime_scope": "production",
+            "reachability": "reachable",
+            "known_exploited_source": "Vendor advisory says this is not actively exploited.",
+        },
+    )
+
+    result = explain_possible_impact(task)
+    joined_result = " ".join(flatten_result(result))
+
+    assert "Known exploited status is confirmed by provided report evidence." not in result[
+        "confirmed_facts"
+    ]
+    assert "Confirmed known exploited status can increase urgency" not in joined_result
+    assert "Known exploited status is not confirmed by the provided evidence." in result[
+        "unknowns"
+    ]
+
+
+def test_negated_risk_known_exploited_reference_does_not_confirm_or_add_urgency():
+    task = base_task(
+        risk={
+            "known_exploited": True,
+            "runtime_scope": "production",
+            "reachability": "reachable",
+            "known_exploited_reference": "Reference notes not actively exploited in production.",
+        },
+    )
+
+    result = explain_possible_impact(task)
+    joined_result = " ".join(flatten_result(result))
+
+    assert "Known exploited status is confirmed by provided report evidence." not in result[
+        "confirmed_facts"
+    ]
+    assert "Confirmed known exploited status can increase urgency" not in joined_result
+    assert "Known exploited status is not confirmed by the provided evidence." in result[
+        "unknowns"
+    ]
+
+
 def test_positive_cited_known_exploited_evidence_still_confirms():
     task = base_task(
         risk={"known_exploited": True, "runtime_scope": "production", "reachability": "reachable"},
@@ -113,6 +179,48 @@ def test_positive_cited_known_exploited_evidence_still_confirms():
                 "claim": "Vendor advisory confirms known exploited activity in the wild.",
             }
         ],
+    )
+
+    result = explain_possible_impact(task)
+
+    assert "Known exploited status is confirmed by provided report evidence." in result[
+        "confirmed_facts"
+    ]
+    assert any("can increase urgency" in item for item in result["possible_impacts"])
+    assert "Known exploited status is not confirmed by the provided evidence." not in result[
+        "unknowns"
+    ]
+
+
+def test_positive_risk_known_exploited_source_still_confirms():
+    task = base_task(
+        risk={
+            "known_exploited": True,
+            "runtime_scope": "production",
+            "reachability": "reachable",
+            "known_exploited_source": "Vendor advisory confirms known exploited activity.",
+        },
+    )
+
+    result = explain_possible_impact(task)
+
+    assert "Known exploited status is confirmed by provided report evidence." in result[
+        "confirmed_facts"
+    ]
+    assert any("can increase urgency" in item for item in result["possible_impacts"])
+    assert "Known exploited status is not confirmed by the provided evidence." not in result[
+        "unknowns"
+    ]
+
+
+def test_positive_risk_known_exploited_reference_still_confirms():
+    task = base_task(
+        risk={
+            "known_exploited": True,
+            "runtime_scope": "production",
+            "reachability": "reachable",
+            "known_exploited_reference": "Reference confirms this is actively exploited.",
+        },
     )
 
     result = explain_possible_impact(task)

@@ -338,7 +338,11 @@ def risk_known_exploited_has_validated_source(risk: Mapping[str, object]) -> boo
         "known_exploited_evidence",
         "known_exploited_reference",
     )
-    return any(text_value(risk.get(field)) is not None for field in source_fields)
+    for field in source_fields:
+        value = text_value(risk.get(field))
+        if value is not None and mentions_known_exploited(value):
+            return True
+    return False
 
 
 def mentions_known_exploited(value: str) -> bool:
