@@ -71,6 +71,7 @@ def explain_possible_impact(task: object) -> dict[str, list[str]]:
     risk = mapping_value(task_context.get("risk"))
     evidence = sequence_value(task_context.get("evidence"))
     context_notes = invalid_context_notes(task_context)
+    known_exploited_is_confirmed = known_exploited_confirmed(risk, evidence)
 
     if has_invalid_core_context(context_notes):
         categories = ["unknown"]
@@ -78,10 +79,28 @@ def explain_possible_impact(task: object) -> dict[str, list[str]]:
         categories = classify_impact_categories(package, vulnerability, risk)
     result = {
         "impact_categories": categories,
-        "confirmed_facts": confirmed_facts(task_context, package, vulnerability, risk, evidence),
-        "possible_impacts": possible_impacts(categories, package, vulnerability, risk, evidence),
-        "unknowns": unknowns(vulnerability, risk, evidence, context_notes),
-        "human_review_notes": human_review_notes(vulnerability, risk, evidence, context_notes),
+        "confirmed_facts": confirmed_facts(
+            task_context,
+            package,
+            vulnerability,
+            risk,
+            evidence,
+            known_exploited_is_confirmed,
+        ),
+        "possible_impacts": possible_impacts(
+            categories,
+            package,
+            vulnerability,
+            risk,
+            known_exploited_is_confirmed,
+        ),
+        "unknowns": unknowns(vulnerability, risk, context_notes, known_exploited_is_confirmed),
+        "human_review_notes": human_review_notes(
+            vulnerability,
+            risk,
+            context_notes,
+            known_exploited_is_confirmed,
+        ),
     }
     return sanitize_result(result)
 
@@ -114,6 +133,7 @@ def confirmed_facts(
     vulnerability: Mapping[str, object],
     risk: Mapping[str, object],
     evidence: Sequence[object],
+    known_exploited_is_confirmed: bool,
 ) -> list[str]:
     facts = []
     package_name = text_value(package.get("name"))
@@ -164,7 +184,7 @@ def confirmed_facts(
     if isinstance(risk_score, int | float):
         facts.append("Risk score is %s." % int(risk_score))
 
-    if known_exploited_confirmed(risk, evidence):
+    if known_exploited_is_confirmed:
         facts.append("Known exploited status is confirmed by provided report evidence.")
 
     evidence_facts = evidence_claim_facts(evidence)
@@ -205,7 +225,7 @@ def possible_impacts(
     package: Mapping[str, object],
     vulnerability: Mapping[str, object],
     risk: Mapping[str, object],
-    evidence: Sequence[object],
+    known_exploited_is_confirmed: bool,
 ) -> list[str]:
     package_name = text_value(package.get("name")) or "the affected package"
     severity = text_value(vulnerability.get("severity"))
@@ -238,7 +258,7 @@ def possible_impacts(
         impacts.append(
             "High-severity production findings could increase release or incident-review urgency."
         )
-    if known_exploited_confirmed(risk, evidence):
+    if known_exploited_is_confirmed:
         impacts.append(
             "Confirmed known exploited status can increase urgency, but local runtime exposure still needs review."
         )
@@ -248,8 +268,8 @@ def possible_impacts(
 def unknowns(
     vulnerability: Mapping[str, object],
     risk: Mapping[str, object],
-    evidence: Sequence[object],
     context_notes: Sequence[str],
+    known_exploited_is_confirmed: bool,
 ) -> list[str]:
     values = list(context_notes)
     severity = text_value(vulnerability.get("severity"))
@@ -261,7 +281,7 @@ def unknowns(
     reachability = text_value(risk.get("reachability"))
     if reachability is None or is_unknown(reachability):
         values.append("Runtime reachability is unknown.")
-    if not known_exploited_confirmed(risk, evidence):
+    if not known_exploited_is_confirmed:
         values.append("Known exploited status is not confirmed by the provided evidence.")
     fixed_versions = list_text_values(vulnerability.get("fixed_versions"))
     if len(fixed_versions) == 0:
@@ -273,8 +293,8 @@ def unknowns(
 def human_review_notes(
     vulnerability: Mapping[str, object],
     risk: Mapping[str, object],
-    evidence: Sequence[object],
     context_notes: Sequence[str],
+    known_exploited_is_confirmed: bool,
 ) -> list[str]:
     notes = [
         "Verify whether the package is used in the relevant runtime path.",
@@ -283,7 +303,7 @@ def human_review_notes(
     ]
     if has_invalid_core_context(context_notes):
         notes.append("Human review is required because input context is missing or malformed.")
-    if known_exploited_confirmed(risk, evidence):
+    if known_exploited_is_confirmed:
         notes.append("Confirm the known-exploited source and whether the deployed service is exposed.")
     elif risk.get("known_exploited") is True:
         notes.append("Review the reported known-exploited flag against a cited advisory or evidence item.")

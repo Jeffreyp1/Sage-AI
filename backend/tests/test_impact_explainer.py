@@ -79,6 +79,34 @@ def test_known_exploited_is_only_confirmed_when_evidence_explicitly_says_so():
     ]
 
 
+def test_confirmed_known_exploited_status_is_rendered_consistently_across_sections():
+    task = base_task(
+        risk={"known_exploited": True, "runtime_scope": "production", "reachability": "reachable"},
+        evidence=[
+            {
+                "type": "advisory",
+                "source": "vendor advisory",
+                "claim": "Vendor advisory confirms known exploited activity in the wild.",
+            }
+        ],
+    )
+
+    result = explain_possible_impact(task)
+
+    assert "Known exploited status is confirmed by provided report evidence." in result[
+        "confirmed_facts"
+    ]
+    assert "Confirmed known exploited status can increase urgency, but local runtime exposure still needs review." in result[
+        "possible_impacts"
+    ]
+    assert "Known exploited status is not confirmed by the provided evidence." not in result[
+        "unknowns"
+    ]
+    assert "Confirm the known-exploited source and whether the deployed service is exposed." in result[
+        "human_review_notes"
+    ]
+
+
 def test_negated_known_exploited_evidence_does_not_confirm_or_add_urgency():
     claims = (
         "No known exploited activity has been observed.",
