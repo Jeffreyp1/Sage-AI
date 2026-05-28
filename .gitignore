@@ -7,6 +7,7 @@ __pycache__/
 .vulnsage-mcp-reports/
 .pytest_cache/
 .ruff_cache/
+.tools/
 
 backend/.venv/
 postgres_data/
