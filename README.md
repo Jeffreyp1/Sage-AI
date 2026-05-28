@@ -11,6 +11,13 @@ Previously developed under the working name VulnSage AI. Public-facing docs now
 use Sage AI; legacy command names are kept temporarily so existing local demos
 and MCP client configs keep working.
 
+## Project Status
+
+This repository may be made public for portfolio review and source inspection.
+It is not yet an official package release, hosted service, or MCP registry
+publication. Users are responsible for running it only on repositories they own
+or are authorized to analyze.
+
 ## Architecture
 
 ```mermaid
@@ -276,3 +283,11 @@ References checked for setup shape:
 Sage AI is defensive tooling. It does not generate exploit payloads,
 automate exploitation, scan third-party systems without permission, auto-merge
 patches, or accept risk without human approval.
+
+Read the project policies before using or sharing it:
+
+- [License](LICENSE): Apache-2.0 terms, including warranty and liability limits
+- [Acceptable Use](ACCEPTABLE_USE.md): defensive repository analysis only
+- [Security Policy](SECURITY.md): how to report security issues safely
+- [Disclaimer](DISCLAIMER.md): outputs are advisory and require human review
+- [Privacy](PRIVACY.md): local-first behavior and AI-client data handling notes
