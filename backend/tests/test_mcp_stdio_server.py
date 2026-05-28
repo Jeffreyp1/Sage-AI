@@ -96,6 +96,26 @@ def test_tools_list_returns_handler_tool_schemas():
     assert response["result"]["tools"][0]["inputSchema"]["type"] == "object"
 
 
+def test_tools_list_real_handler_exposes_mcp_usability_tools(tmp_path):
+    server = JsonRpcMcpServer(
+        handlers=McpToolHandlers(
+            workspace_root=tmp_path,
+            storage_dir=tmp_path / "reports",
+        )
+    )
+
+    response = server.handle_message(
+        {"jsonrpc": "2.0", "id": "tools", "method": "tools/list"}
+    )
+
+    tools = response["result"]["tools"]
+    by_name = {tool["name"]: tool for tool in tools}
+    assert "scan_current_repo" in by_name
+    assert "get_vulnerability_brief" in by_name
+    assert "explain_top_risks" in by_name
+    assert "repo_path" not in by_name["scan_current_repo"]["inputSchema"]["properties"]
+
+
 def test_tools_call_returns_text_and_structured_content():
     handlers = FakeHandlers()
     server = JsonRpcMcpServer(handlers=handlers)

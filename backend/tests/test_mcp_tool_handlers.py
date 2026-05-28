@@ -145,6 +145,20 @@ def test_scan_current_repo_scans_workspace_root_without_repo_path(tmp_path):
     assert service.calls == [(str(workspace.resolve()), workspace.resolve())]
 
 
+def test_scan_current_repo_rejects_repo_path_extra_field_before_scanning(tmp_path):
+    workspace = tmp_path / "workspace"
+    storage = workspace / "mcp-reports"
+    workspace.mkdir()
+    handlers = McpToolHandlers(
+        workspace_root=workspace,
+        storage_dir=storage,
+        scan_service=FailingScanService(),
+    )
+
+    with pytest.raises(ToolHandlerError, match="Invalid input for scan_current_repo"):
+        handlers.call_tool("scan_current_repo", {"repo_path": "payments-api"})
+
+
 def test_get_vulnerability_brief_returns_report_facts_and_evidence_ids(tmp_path):
     workspace = tmp_path / "workspace"
     repo = workspace / "payments-api"
