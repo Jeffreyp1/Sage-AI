@@ -186,6 +186,7 @@ class PythonDependencyParserTest(unittest.TestCase):
                         "requests==2.31.*",
                         "fastapi~=0.110",
                         "django>=5  # range stays a version spec",
+                        "httpx[http2]>=0.27 ; python_version >= '3.11'",
                         "uvicorn",
                         "",
                     ]
@@ -196,7 +197,7 @@ class PythonDependencyParserTest(unittest.TestCase):
             dependencies = PythonDependencyParser().parse(str(root))
 
         by_name = {dependency.name: dependency for dependency in dependencies}
-        self.assertEqual(set(by_name), {"django", "fastapi", "flask", "requests", "uvicorn"})
+        self.assertEqual(set(by_name), {"django", "fastapi", "flask", "httpx", "requests", "uvicorn"})
         self.assertEqual(by_name["flask"].ecosystem, "PyPI")
         self.assertEqual(by_name["flask"].current_version, "3.0.2")
         self.assertEqual(by_name["flask"].version_spec, "==3.0.2")
@@ -207,9 +208,55 @@ class PythonDependencyParserTest(unittest.TestCase):
         self.assertEqual(by_name["fastapi"].version_spec, "~=0.110")
         self.assertEqual(by_name["django"].current_version, None)
         self.assertEqual(by_name["django"].version_spec, ">=5")
+        self.assertEqual(by_name["httpx"].current_version, None)
+        self.assertEqual(by_name["httpx"].version_spec, ">=0.27")
         self.assertEqual(by_name["uvicorn"].current_version, None)
         self.assertEqual(by_name["uvicorn"].version_spec, None)
         self.assertEqual(by_name["uvicorn"].dependency_type, "dependencies")
+
+    def test_skips_unsupported_requirements_txt_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "requirements.txt").write_text(
+                "\n".join(
+                    [
+                        "flask==3.0.2",
+                        "git+https://github.com/pallets/flask.git#egg=flask",
+                        "https://example.com/packages/pkg.whl",
+                        "https://example.com/packages/pkg-1.0.0-py3-none-any.whl",
+                        "./vendor/local-package",
+                        "../outside-package",
+                        "-e git+https://github.com/example/editable.git#egg=editable",
+                        "--editable git+https://github.com/example/editable.git#egg=editable",
+                        "flask definitely-not-a-version",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            dependencies = PythonDependencyParser().parse(str(root))
+
+        self.assertEqual([dependency.name for dependency in dependencies], ["flask"])
+        self.assertEqual(dependencies[0].current_version, "3.0.2")
+
+    def test_parses_direct_reference_without_exact_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            direct_reference = (
+                "internal-lib @ https://example.com/packages/internal-lib-1.0.0-py3-none-any.whl"
+                " ; python_version >= '3.11'"
+            )
+            (root / "requirements.txt").write_text(direct_reference, encoding="utf-8")
+
+            dependencies = PythonDependencyParser().parse(str(root))
+
+        self.assertEqual(len(dependencies), 1)
+        self.assertEqual(dependencies[0].name, "internal-lib")
+        self.assertIsNone(dependencies[0].current_version)
+        self.assertEqual(
+            dependencies[0].version_spec,
+            "@ https://example.com/packages/internal-lib-1.0.0-py3-none-any.whl",
+        )
 
     def test_parses_pep_621_pyproject_dependencies_and_optional_groups(self):
         with tempfile.TemporaryDirectory() as tmp:

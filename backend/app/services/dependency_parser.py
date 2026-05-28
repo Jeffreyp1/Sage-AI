@@ -47,7 +47,14 @@ DEPENDENCY_GROUPS = {
 PYTHON_REQUIREMENT_PATTERN = re.compile(
     r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?\s*(.*)$"
 )
-PYTHON_VERSION_OPERATOR_PATTERN = re.compile(r"^(===|==|~=|!=|<=|>=|<|>)\s*(.+)$")
+PYTHON_VERSION_CLAUSE_PATTERN = re.compile(r"^(===|==|~=|!=|<=|>=|<|>)\s*([^,\s]+)$")
+PYTHON_DIRECT_REFERENCE_PATTERN = re.compile(r"^@\s*(\S+)$")
+PYTHON_UNSUPPORTED_REQUIREMENT_PREFIX_PATTERN = re.compile(
+    r"^(?:[A-Za-z][A-Za-z0-9+.-]*://|(?:git|hg|svn|bzr)\+|git@|hg@|svn@|bzr@)"
+)
+PYTHON_DIRECT_REFERENCE_URL_PATTERN = re.compile(
+    r"^(?:https?://|(?:git|hg|svn|bzr)\+https?://)\S+$"
+)
 
 
 class NodeDependencyParser:
@@ -435,7 +442,7 @@ class PythonDependencyParser:
         source: str,
     ) -> Optional[ParsedDependency]:
         requirement = requirement.split(";", 1)[0].strip()
-        if not requirement or requirement.startswith(("-", ".")):
+        if is_unsupported_python_requirement(requirement):
             return None
 
         match = PYTHON_REQUIREMENT_PATTERN.match(requirement)
@@ -444,7 +451,9 @@ class PythonDependencyParser:
 
         name = normalize_python_package_name(match.group(1))
         suffix = match.group(2).strip()
-        version_spec = python_version_spec_from_suffix(suffix)
+        version_spec = python_version_spec_from_suffix(suffix) if suffix else None
+        if suffix and version_spec is None:
+            return None
         current_version = pinned_python_version(version_spec)
 
         return ParsedDependency(
@@ -554,11 +563,39 @@ def normalize_python_package_name(name: str) -> str:
 def python_version_spec_from_suffix(suffix: str) -> Optional[str]:
     if not suffix:
         return None
-    match = PYTHON_VERSION_OPERATOR_PATTERN.match(suffix)
+
+    direct_reference = python_direct_reference_from_suffix(suffix)
+    if direct_reference is not None:
+        return direct_reference
+
+    clauses = []
+    for clause in suffix.split(","):
+        match = PYTHON_VERSION_CLAUSE_PATTERN.match(clause.strip())
+        if not match:
+            return None
+        operator, version = match.groups()
+        clauses.append("%s%s" % (operator, version.strip()))
+    return ",".join(clauses)
+
+
+def python_direct_reference_from_suffix(suffix: str) -> Optional[str]:
+    match = PYTHON_DIRECT_REFERENCE_PATTERN.match(suffix)
     if not match:
-        return suffix
-    operator, version = match.groups()
-    return "%s%s" % (operator, version.strip())
+        return None
+    url = match.group(1).strip()
+    if not PYTHON_DIRECT_REFERENCE_URL_PATTERN.match(url):
+        return None
+    return "@ %s" % url
+
+
+def is_unsupported_python_requirement(requirement: str) -> bool:
+    if not requirement:
+        return True
+    if requirement.startswith(("-", ".", "/", "~")):
+        return True
+    if re.match(r"^[A-Za-z]:[\\/]", requirement):
+        return True
+    return PYTHON_UNSUPPORTED_REQUIREMENT_PREFIX_PATTERN.match(requirement) is not None
 
 
 def pinned_python_version(version_spec: Optional[str]) -> Optional[str]:
