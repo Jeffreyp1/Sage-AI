@@ -235,6 +235,41 @@ def test_auditor_blocks_safe_to_ignore_and_no_risk_language_in_summary():
     assert "overconfident_fix_language" in finding_codes(result)
 
 
+def test_auditor_reports_overconfident_language_from_claim_field_paths():
+    cases = [
+        ("claims", "text", "claims[0].text"),
+        ("claims", "claim", "claims[0].claim"),
+        ("claims", "rationale", "claims[0].rationale"),
+        ("claim_checks", "claim", "claim_checks[0].claim"),
+        ("claim_checks", "rationale", "claim_checks[0].rationale"),
+    ]
+
+    for claim_key, field, expected_path in cases:
+        output = cited_output()
+        claim = output["claims"][0]
+        if claim_key == "claim_checks":
+            output["claim_checks"] = [
+                {
+                    "claim_id": claim["claim_id"],
+                    "claim": claim["text"],
+                    "disposition": claim["type"],
+                    "evidence_ids": claim["evidence_ids"],
+                }
+            ]
+            output.pop("claims")
+            claim = output["claim_checks"][0]
+        claim[field] = "Install archive-utils 2.2.0 and it fixes everything."
+
+        result = audit_ai_claims(output)
+
+        assert result["passed"] is False
+        assert any(
+            finding["code"] == "overconfident_fix_language"
+            and finding["path"] == expected_path
+            for finding in result["findings"]
+        )
+
+
 def test_auditor_blocks_unsafe_offensive_wording_using_existing_markers():
     output = cited_output()
     output["claims"][1]["text"] = "The explanation includes exploit steps."

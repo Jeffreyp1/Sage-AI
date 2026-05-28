@@ -74,6 +74,7 @@ LOW_SIGNAL_COVERAGE_WORDS = {
     "were",
     "with",
 }
+GENERATED_CLAIM_FIELDS = ("text", "claim", "rationale")
 
 
 @dataclass(frozen=True)
@@ -450,21 +451,7 @@ def generated_prose_with_paths(value: Mapping[object, object]) -> Iterable[tuple
 
 def generated_claim_language_with_paths(value: Mapping[object, object]) -> Iterable[tuple[str, str]]:
     yield from generated_prose_with_paths(value)
-
-    raw_claims = value.get("claims")
-    claims_path = "claims"
-    if raw_claims is None:
-        raw_claims = value.get("claim_checks")
-        claims_path = "claim_checks"
-
-    for index, claim in enumerate(list_value(raw_claims)):
-        claim_mapping = mapping_value(claim)
-        yield from strings_from_value(claim_mapping.get("text"), "%s[%s].text" % (claims_path, index))
-        yield from strings_from_value(claim_mapping.get("claim"), "%s[%s].claim" % (claims_path, index))
-        yield from strings_from_value(
-            claim_mapping.get("rationale"),
-            "%s[%s].rationale" % (claims_path, index),
-        )
+    yield from generated_claim_field_strings_with_paths(value)
 
 
 def generated_strings_with_paths(value: Mapping[object, object]) -> Iterable[tuple[str, str]]:
@@ -476,6 +463,12 @@ def generated_strings_with_paths(value: Mapping[object, object]) -> Iterable[tup
         yield from strings_from_value(citation_mapping.get("quote"), "citations[%s].quote" % index)
         yield from strings_from_value(citation_mapping.get("note"), "citations[%s].note" % index)
 
+    yield from generated_claim_field_strings_with_paths(value)
+
+
+def generated_claim_field_strings_with_paths(
+    value: Mapping[object, object],
+) -> Iterable[tuple[str, str]]:
     raw_claims = value.get("claims")
     claims_path = "claims"
     if raw_claims is None:
@@ -484,12 +477,11 @@ def generated_strings_with_paths(value: Mapping[object, object]) -> Iterable[tup
 
     for index, claim in enumerate(list_value(raw_claims)):
         claim_mapping = mapping_value(claim)
-        yield from strings_from_value(claim_mapping.get("text"), "%s[%s].text" % (claims_path, index))
-        yield from strings_from_value(claim_mapping.get("claim"), "%s[%s].claim" % (claims_path, index))
-        yield from strings_from_value(
-            claim_mapping.get("rationale"),
-            "%s[%s].rationale" % (claims_path, index),
-        )
+        for field in GENERATED_CLAIM_FIELDS:
+            yield from strings_from_value(
+                claim_mapping.get(field),
+                "%s[%s].%s" % (claims_path, index, field),
+            )
 
 
 def strings_from_value(value: object, path: str) -> Iterable[tuple[str, str]]:
