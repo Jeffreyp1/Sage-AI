@@ -258,6 +258,59 @@ class PythonDependencyParserTest(unittest.TestCase):
             "@ https://example.com/packages/internal-lib-1.0.0-py3-none-any.whl",
         )
 
+    def test_parses_requirement_version_specs_without_inference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "requirements.txt").write_text(
+                "\n".join(
+                    [
+                        "Mixed_Case.Package==1.2.3",
+                        "range-lib>=1,<2",
+                        "wildcard-lib==1.*",
+                        "direct-lib @ https://example.com/packages/direct-lib.whl",
+                        "unpinned-lib",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            dependencies = PythonDependencyParser().parse(str(root))
+
+        by_name = {dependency.name: dependency for dependency in dependencies}
+        self.assertEqual(by_name["mixed-case-package"].current_version, "1.2.3")
+        self.assertEqual(by_name["mixed-case-package"].version_spec, "==1.2.3")
+        self.assertIsNone(by_name["range-lib"].current_version)
+        self.assertEqual(by_name["range-lib"].version_spec, ">=1,<2")
+        self.assertIsNone(by_name["wildcard-lib"].current_version)
+        self.assertEqual(by_name["wildcard-lib"].version_spec, "==1.*")
+        self.assertIsNone(by_name["direct-lib"].current_version)
+        self.assertEqual(
+            by_name["direct-lib"].version_spec,
+            "@ https://example.com/packages/direct-lib.whl",
+        )
+        self.assertIsNone(by_name["unpinned-lib"].current_version)
+        self.assertIsNone(by_name["unpinned-lib"].version_spec)
+
+    def test_skips_unsupported_python_direct_reference_suffixes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "requirements.txt").write_text(
+                "\n".join(
+                    [
+                        "flask==3.0.2",
+                        "local-lib @ file:///tmp/local-lib.whl",
+                        "ssh-lib @ git+ssh://github.com/example/ssh-lib.git",
+                        "relative-lib @ ../relative-lib",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            dependencies = PythonDependencyParser().parse(str(root))
+
+        self.assertEqual([dependency.name for dependency in dependencies], ["flask"])
+        self.assertEqual(dependencies[0].current_version, "3.0.2")
+
     def test_parses_pep_621_pyproject_dependencies_and_optional_groups(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

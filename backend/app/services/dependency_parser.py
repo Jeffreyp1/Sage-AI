@@ -441,20 +441,10 @@ class PythonDependencyParser:
         dependency_type: str,
         source: str,
     ) -> Optional[ParsedDependency]:
-        requirement = requirement.split(";", 1)[0].strip()
-        if is_unsupported_python_requirement(requirement):
+        parsed = _parse_python_requirement_spec(requirement)
+        if parsed is None:
             return None
-
-        match = PYTHON_REQUIREMENT_PATTERN.match(requirement)
-        if not match:
-            return None
-
-        name = normalize_python_package_name(match.group(1))
-        suffix = match.group(2).strip()
-        version_spec = python_version_spec_from_suffix(suffix) if suffix else None
-        if suffix and version_spec is None:
-            return None
-        current_version = pinned_python_version(version_spec)
+        name, version_spec, current_version = parsed
 
         return ParsedDependency(
             name=name,
@@ -558,6 +548,26 @@ def infer_version_from_spec(version_spec: str) -> Optional[str]:
 
 def normalize_python_package_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _parse_python_requirement_spec(
+    requirement: str,
+) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
+    requirement = requirement.split(";", 1)[0].strip()
+    if is_unsupported_python_requirement(requirement):
+        return None
+
+    match = PYTHON_REQUIREMENT_PATTERN.match(requirement)
+    if not match:
+        return None
+
+    name = normalize_python_package_name(match.group(1))
+    suffix = match.group(2).strip()
+    version_spec = python_version_spec_from_suffix(suffix) if suffix else None
+    if suffix and version_spec is None:
+        return None
+
+    return name, version_spec, pinned_python_version(version_spec)
 
 
 def python_version_spec_from_suffix(suffix: str) -> Optional[str]:
