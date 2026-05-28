@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.vulnsage-mcp-reports/
+.pytest_cache/
+.ruff_cache/
+.tools/
+
+backend/.venv/
+backend/.venv*/
+postgres_data/

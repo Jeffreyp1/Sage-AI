@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vulnsage-ai-backend"
+version = "0.1.0"
+description = "Backend MVP for Sage AI vulnerability triage."
+readme = {text = "Backend MVP for Sage AI vulnerability triage.", content-type = "text/markdown"}
+license = {text = "Apache-2.0"}
+requires-python = ">=3.11"
+dependencies = [
+  "alembic>=1.13.0",
+  "fastapi>=0.110.0",
+  "psycopg[binary]>=3.1.0",
+  "pydantic-settings>=2.2.0",
+  "sqlalchemy>=2.0.0",
+  "uvicorn[standard]>=0.27.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.4.0"
+]
+
+[project.scripts]
+vulnsage = "app.cli:main"
+vulnsage-mcp = "app.mcp.stdio_server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

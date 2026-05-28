@@ -1,0 +1,430 @@
+"""Client-AI context bundles and output validation."""
+
+from collections.abc import Iterable, Mapping
+
+from app.ai.contracts import (
+    AIFindingSummaryResponse,
+    Citation,
+    ClaimCheck,
+    validate_finding_summary_response,
+)
+from app.eval.claim_auditor import audit_ai_claims
+from app.services.ai_summary_service import build_finding_summary_request
+from app.services.ai_output_safety import unsafe_client_output_markers
+from app.services.public_safety import sanitize_public_text, sanitize_public_value
+from app.services.rag_types import EvidenceChunk
+
+
+AI_CONTEXT_BUNDLE_SCHEMA_VERSION = "vulnsage.ai_context_bundle.v1"
+ALLOWED_AI_OUTPUT_FIELDS = {
+    "finding_id",
+    "package_name",
+    "vulnerability_id",
+    "priority",
+    "risk_score",
+    "summary",
+    "explanation",
+    "citations",
+    "claim_checks",
+    "provider_name",
+    "errors",
+}
+ALLOWED_AI_CITATION_FIELDS = {"claim_id", "evidence_id", "quote", "note"}
+ALLOWED_AI_CLAIM_CHECK_FIELDS = {
+    "claim_id",
+    "claim",
+    "disposition",
+    "evidence_ids",
+    "rationale",
+}
+
+
+class AIOutputParseError(ValueError):
+    """Raised when a client AI response does not match the expected shape."""
+
+
+def build_ai_context_bundle(
+    task: Mapping[str, object],
+    retrieved_chunks: Iterable[EvidenceChunk] = (),
+) -> dict[str, object]:
+    """Build a focused, safe case file for a client-provided AI assistant."""
+
+    safe_task = mapping_value(sanitize_public_value(dict(task)))
+    request = build_finding_summary_request(safe_task, retrieved_chunks)
+    request_dict = request.to_dict()
+    return {
+        "schema_version": AI_CONTEXT_BUNDLE_SCHEMA_VERSION,
+        "finding_id": request.finding_id,
+        "finding": compact_finding(task),
+        "ai_request": request_dict,
+        "citation_rules": citation_rules(),
+        "prompt": prompt_text(request_dict),
+        "expected_output_schema": expected_output_schema(),
+        "safety_constraints": request_dict["safety_constraints"],
+    }
+
+
+def validate_client_ai_output(
+    task: Mapping[str, object],
+    ai_output: object,
+    retrieved_chunks: Iterable[EvidenceChunk] = (),
+) -> dict[str, object]:
+    safe_task = mapping_value(sanitize_public_value(dict(task)))
+    request = build_finding_summary_request(safe_task, retrieved_chunks)
+    if not isinstance(ai_output, Mapping):
+        return blocked_validation_result("AI output must be a JSON object.")
+
+    unknown_fields = unsupported_ai_output_fields(ai_output)
+    if len(unknown_fields) > 0:
+        return blocked_validation_result("AI output contained unsupported fields.")
+
+    unsafe_markers = unsafe_client_output_markers(ai_output)
+    if len(unsafe_markers) > 0:
+        return blocked_validation_result("AI response contained unsafe text.")
+
+    try:
+        response = parse_ai_output(ai_output)
+    except AIOutputParseError as error:
+        message = sanitize_public_text(str(error))
+        return blocked_validation_result(message)
+
+    validation = validate_finding_summary_response(request, response)
+    validation_dict = public_validation_dict(validation.to_dict())
+    if not validation.blocked:
+        validation_dict = validation_dict_with_claim_audit(
+            validation_dict,
+            audit_ai_claims(response.to_dict()),
+        )
+    return {
+        "passed": validation_dict.get("valid") is True
+        and validation_dict.get("blocked") is not True,
+        "blocked": validation_dict.get("blocked") is True,
+        "summary": validation_summary(validation_dict),
+        "validation": validation_dict,
+    }
+
+
+def compact_finding(task: Mapping[str, object]) -> dict[str, object]:
+    package = mapping_value(task.get("package"))
+    vulnerability = mapping_value(task.get("vulnerability"))
+    risk = mapping_value(task.get("risk"))
+    patch_plan = mapping_value(task.get("patch_plan"))
+    return mapping_value(
+        sanitize_public_value(
+            {
+                "task_id": task.get("task_id"),
+                "package_name": package.get("name"),
+                "vulnerability_id": vulnerability.get("canonical_id")
+                or vulnerability.get("source_id"),
+                "severity": vulnerability.get("severity"),
+                "priority": risk.get("priority"),
+                "risk_score": risk.get("risk_score"),
+                "target_version": patch_plan.get("target_version"),
+            }
+        )
+    )
+
+
+def blocked_validation_result(message: str) -> dict[str, object]:
+    return {
+        "passed": False,
+        "blocked": True,
+        "summary": "FAIL AI output validation: %s" % message,
+        "validation": {
+            "valid": False,
+            "blocked": True,
+            "errors": [message],
+            "warnings": [],
+            "invalid_citation_ids": [],
+            "unsupported_claim_ids": [],
+            "mutated_fields": [],
+        },
+    }
+
+
+def unsupported_ai_output_fields(value: Mapping[str, object]) -> list[str]:
+    fields: list[str] = []
+    for key in value:
+        key_text = str(key)
+        if key_text not in ALLOWED_AI_OUTPUT_FIELDS:
+            fields.append(key_text)
+
+    fields.extend(
+        unsupported_nested_fields(
+            value.get("citations"),
+            allowed_fields=ALLOWED_AI_CITATION_FIELDS,
+            path="citations",
+        )
+    )
+    fields.extend(
+        unsupported_nested_fields(
+            value.get("claim_checks"),
+            allowed_fields=ALLOWED_AI_CLAIM_CHECK_FIELDS,
+            path="claim_checks",
+        )
+    )
+    return fields
+
+
+def unsupported_nested_fields(
+    value: object,
+    *,
+    allowed_fields: set[str],
+    path: str,
+) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    fields: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            continue
+        for key in item:
+            key_text = str(key)
+            if key_text not in allowed_fields:
+                fields.append("%s[%s].%s" % (path, index, key_text))
+    return fields
+
+
+def citation_rules() -> list[str]:
+    return [
+        "Use only the evidence in this bundle.",
+        "Every fact or inference claim must cite matching evidence IDs.",
+        "Use unknown when the bundle does not prove a claim.",
+        "Do not change priority, risk score, package, vulnerability, or finding IDs.",
+        "Do not include exploit steps, payloads, or offensive instructions.",
+    ]
+
+
+def prompt_text(ai_request: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            "You are a defensive AppSec assistant reviewing one dependency finding.",
+            "Use only the evidence in this bundle.",
+            "Return JSON matching expected_output_schema exactly.",
+            "Every fact or inference claim must include claim_checks.evidence_ids and a matching citation.",
+            "Say unknown when evidence is missing.",
+            "Finding: %s for %s, priority %s, risk score %s."
+            % (
+                sanitize_public_text(str(ai_request.get("vulnerability_id", "unknown"))),
+                sanitize_public_text(str(ai_request.get("package_name", "unknown"))),
+                sanitize_public_text(str(ai_request.get("priority", "unknown"))),
+                sanitize_public_text(str(ai_request.get("risk_score", "unknown"))),
+            ),
+        ]
+    )
+
+
+def expected_output_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "required": [
+            "finding_id",
+            "package_name",
+            "vulnerability_id",
+            "priority",
+            "risk_score",
+            "summary",
+            "explanation",
+            "citations",
+            "claim_checks",
+            "provider_name",
+        ],
+        "properties": {
+            "finding_id": {"type": "string"},
+            "package_name": {"type": "string"},
+            "vulnerability_id": {"type": "string"},
+            "priority": {"type": "string"},
+            "risk_score": {"type": "integer"},
+            "summary": {"type": "string"},
+            "explanation": {"type": "string"},
+            "citations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["claim_id", "evidence_id"],
+                },
+            },
+            "claim_checks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["claim_id", "claim", "disposition", "evidence_ids"],
+                },
+            },
+            "provider_name": {"type": "string"},
+            "errors": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+
+def parse_ai_output(value: Mapping[str, object]) -> AIFindingSummaryResponse:
+    return AIFindingSummaryResponse(
+        finding_id=required_string(value, "finding_id"),
+        package_name=required_string(value, "package_name"),
+        vulnerability_id=required_string(value, "vulnerability_id"),
+        priority=required_string(value, "priority"),
+        risk_score=required_int(value, "risk_score"),
+        summary=required_string(value, "summary"),
+        explanation=required_string(value, "explanation"),
+        citations=parse_citations(value.get("citations")),
+        claim_checks=parse_claim_checks(value.get("claim_checks")),
+        provider_name=required_string(value, "provider_name"),
+        errors=optional_string_list(value.get("errors"), "errors"),
+    )
+
+
+def parse_citations(value: object) -> list[Citation]:
+    if not isinstance(value, list):
+        raise AIOutputParseError("AI output citations must be a list.")
+
+    citations: list[Citation] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise AIOutputParseError("AI output citations[%s] must be an object." % index)
+        citations.append(
+            Citation(
+                evidence_id=required_string(item, "evidence_id"),
+                claim_id=required_string(item, "claim_id"),
+                quote=optional_string(item.get("quote"), "quote"),
+                note=optional_string(item.get("note"), "note"),
+            )
+        )
+    return citations
+
+
+def parse_claim_checks(value: object) -> list[ClaimCheck]:
+    if not isinstance(value, list):
+        raise AIOutputParseError("AI output claim_checks must be a list.")
+
+    claims: list[ClaimCheck] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise AIOutputParseError("AI output claim_checks[%s] must be an object." % index)
+        claims.append(
+            ClaimCheck(
+                claim_id=required_string(item, "claim_id"),
+                claim=required_string(item, "claim"),
+                disposition=required_string(item, "disposition"),
+                evidence_ids=required_string_list(item.get("evidence_ids"), "evidence_ids"),
+                rationale=optional_string(item.get("rationale"), "rationale") or "",
+            )
+        )
+    return claims
+
+
+def public_validation_dict(value: Mapping[str, object]) -> dict[str, object]:
+    return mapping_value(sanitize_public_value(dict(value)))
+
+
+def validation_dict_with_claim_audit(
+    validation: Mapping[str, object],
+    audit: Mapping[str, object],
+) -> dict[str, object]:
+    output = mapping_value(validation)
+    output["warnings"] = merged_string_list(
+        output.get("warnings"),
+        audit.get("warnings"),
+    )
+    if audit.get("passed") is True:
+        return output
+
+    output["valid"] = False
+    output["blocked"] = True
+    output["errors"] = merged_string_list(
+        output.get("errors"),
+        ["AI output claim audit failed."],
+    )
+    output["unsupported_claim_ids"] = merged_string_list(
+        output.get("unsupported_claim_ids"),
+        audit_blocked_claim_ids(audit.get("blocked_claims")),
+    )
+    return output
+
+
+def audit_blocked_claim_ids(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    claim_ids: list[str] = []
+    for item in value:
+        item_mapping = mapping_value(item)
+        claim_id = item_mapping.get("claim_id")
+        if isinstance(claim_id, str) and claim_id.strip() != "":
+            claim_ids.append(sanitize_public_text(claim_id).strip())
+    return claim_ids
+
+
+def merged_string_list(*values: object) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            text = sanitize_public_text(item).strip()
+            if text == "" or text in seen:
+                continue
+            seen.add(text)
+            output.append(text)
+    return output
+
+
+def validation_summary(validation: Mapping[str, object]) -> str:
+    if validation.get("blocked") is not True:
+        return "PASS AI output validation with 0 finding(s)"
+
+    errors = validation.get("errors")
+    if isinstance(errors, list) and len(errors) > 0:
+        first_error = errors[0]
+        if isinstance(first_error, str):
+            return "FAIL AI output validation: %s" % first_error
+    return "FAIL AI output validation"
+
+
+def required_string(value: Mapping[str, object], key: str) -> str:
+    raw = value.get(key)
+    if not isinstance(raw, str) or raw.strip() == "":
+        raise AIOutputParseError("AI output %s must be a non-empty string." % key)
+    return sanitize_public_text(raw).strip()
+
+
+def required_int(value: Mapping[str, object], key: str) -> int:
+    raw = value.get(key)
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise AIOutputParseError("AI output %s must be an integer." % key)
+    return raw
+
+
+def required_string_list(value: object, key: str) -> list[str]:
+    if not isinstance(value, list):
+        raise AIOutputParseError("AI output %s must be a list." % key)
+
+    output: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or item.strip() == "":
+            raise AIOutputParseError("AI output %s[%s] must be a string." % (key, index))
+        output.append(sanitize_public_text(item).strip())
+    return output
+
+
+def optional_string_list(value: object, key: str) -> list[str]:
+    if value is None:
+        return []
+    return required_string_list(value, key)
+
+
+def optional_string(value: object, key: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise AIOutputParseError("AI output %s must be a string." % key)
+    return sanitize_public_text(value).strip()
+
+
+def mapping_value(value: object) -> dict[str, object]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
