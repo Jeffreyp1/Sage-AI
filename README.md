@@ -153,6 +153,9 @@ The MCP server lets a local AI client call Sage tools without a Sage-owned model
 API key. The AI client supplies the model; Sage supplies deterministic security
 tools.
 
+For Claude Desktop and local client setup, see
+[`docs/local-mcp-setup.md`](docs/local-mcp-setup.md).
+
 Run the server from this repo:
 
 ```bash
