@@ -52,6 +52,34 @@ def test_auditor_passes_conservative_cited_claims():
     assert result["warnings"] == []
 
 
+def test_auditor_disposition_matrix():
+    cases = [
+        ("fact", ["ev-lockfile"], True, set(), set()),
+        ("inference", ["ev-lockfile"], True, set(), set()),
+        ("unknown", [], True, set(), set()),
+        ("unsupported", [], False, {"unsupported_claim"}, {"claim-1"}),
+    ]
+
+    for disposition, evidence_ids, expected_passed, expected_codes, expected_blocked in cases:
+        output = {
+            "citations": [{"claim_id": "claim-1", "evidence_id": "ev-lockfile"}],
+            "claims": [
+                {
+                    "claim_id": "claim-1",
+                    "text": "archive-utils status needs review.",
+                    "type": disposition,
+                    "evidence_ids": evidence_ids,
+                }
+            ],
+        }
+
+        result = audit_ai_claims(output)
+
+        assert result["passed"] is expected_passed
+        assert expected_codes.issubset(finding_codes(result))
+        assert expected_blocked.issubset(blocked_claim_ids(result))
+
+
 def test_auditor_blocks_fact_claim_without_evidence_id():
     output = cited_output()
     output["claims"][0]["evidence_ids"] = []
@@ -73,6 +101,54 @@ def test_auditor_blocks_claim_with_evidence_id_but_no_matching_citation():
     assert result["passed"] is False
     assert "missing_matching_citation" in finding_codes(result)
     assert "claim-1" in blocked_claim_ids(result)
+
+
+def test_auditor_blocks_unsupported_disposition():
+    output = cited_output()
+    output["claims"][1]["type"] = "unsupported"
+    output["claims"][1]["evidence_ids"] = []
+
+    result = audit_ai_claims(output)
+
+    assert result["passed"] is False
+    assert "unsupported_claim" in finding_codes(result)
+    assert "claim-2" in blocked_claim_ids(result)
+
+
+def test_auditor_blocks_factual_generated_summary_with_no_claims():
+    output = {
+        "summary": "archive-utils 2.1.4 is installed in production.",
+        "citations": [],
+    }
+
+    result = audit_ai_claims(output)
+
+    assert result["passed"] is False
+    assert "missing_auditable_claims" in finding_codes(result)
+
+
+def test_auditor_blocks_mixed_factual_and_unknown_summary_with_no_claims():
+    output = {
+        "summary": "archive-utils 2.1.4 is installed, but exploitability is unknown.",
+        "citations": [],
+    }
+
+    result = audit_ai_claims(output)
+
+    assert result["passed"] is False
+    assert "missing_auditable_claims" in finding_codes(result)
+
+
+def test_auditor_allows_conservative_unknown_prose_with_no_claims():
+    output = {
+        "summary": "Exploitability is unknown and needs human review.",
+        "citations": [],
+    }
+
+    result = audit_ai_claims(output)
+
+    assert result["passed"] is True
+    assert result["warnings"] == ["AI output did not include auditable claims."]
 
 
 def test_auditor_blocks_overconfident_fix_language_in_recommendation():

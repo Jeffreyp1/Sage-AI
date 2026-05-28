@@ -9,6 +9,26 @@ from app.ai.contracts import UNSAFE_RESPONSE_MARKERS, unsafe_marker_found
 
 CONCRETE_DISPOSITIONS = {"fact", "inference"}
 UNKNOWN_DISPOSITIONS = {"unknown", "unsupported"}
+CONSERVATIVE_UNKNOWN_PATTERNS = (
+    re.compile(r"\bunknown\b", re.IGNORECASE),
+    re.compile(r"\bneeds?[\s._-]+human[\s._-]+review\b", re.IGNORECASE),
+    re.compile(r"\brequires?[\s._-]+human[\s._-]+review\b", re.IGNORECASE),
+    re.compile(r"\bmanual[\s._-]+review\b", re.IGNORECASE),
+    re.compile(r"\binsufficient[\s._-]+evidence\b", re.IGNORECASE),
+    re.compile(r"\bnot[\s._-]+enough[\s._-]+evidence\b", re.IGNORECASE),
+    re.compile(r"\b(?:can(?:not|'t)|unable[\s._-]+to)[\s._-]+determine\b", re.IGNORECASE),
+)
+FACTUAL_PROSE_PATTERNS = (
+    re.compile(r"\b\d+\.\d+(?:\.\d+)?\b", re.IGNORECASE),
+    re.compile(r"\b(?:CVE|GHSA|OSV)-[A-Za-z0-9-]+\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:is|are|was|were)[\s._-]+"
+        r"(?:installed|present|used|reachable|affected|vulnerable|exploitable|fixed)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:has|have|uses|contains|includes|imports|depends)[\s._-]+", re.IGNORECASE),
+    re.compile(r"\b(?:detected|found|appears)[\s._-]+in\b", re.IGNORECASE),
+)
 OVERCONFIDENT_PATTERNS = (
     re.compile(r"\bguaranteed\b", re.IGNORECASE),
     re.compile(r"\bwill[\s._-]+fix\b", re.IGNORECASE),
@@ -60,12 +80,25 @@ def audit_ai_claims(ai_output: object) -> dict[str, object]:
     claims = extract_claims(ai_output, findings)
     if len(claims) == 0:
         warnings.append("AI output did not include auditable claims.")
+        findings.extend(missing_auditable_claim_findings(ai_output))
 
     findings.extend(unsafe_wording_findings(ai_output))
     findings.extend(overconfident_language_findings(ai_output))
 
     for claim in claims:
         disposition = claim.disposition
+        if disposition == "unsupported":
+            blocked_claim_ids.append(claim.claim_id)
+            findings.append(
+                AuditFinding(
+                    severity="critical",
+                    code="unsupported_claim",
+                    message="Claims marked unsupported must be blocked.",
+                    path=claim.path,
+                    claim_id=claim.claim_id,
+                )
+            )
+            continue
         if disposition not in CONCRETE_DISPOSITIONS:
             continue
 
@@ -238,6 +271,32 @@ def unsafe_wording_findings(ai_output: Mapping[object, object]) -> list[AuditFin
     ]
 
 
+def missing_auditable_claim_findings(ai_output: Mapping[object, object]) -> list[AuditFinding]:
+    findings: list[AuditFinding] = []
+    for path, text in generated_prose_with_paths(ai_output):
+        if is_conservative_unknown_prose(text):
+            continue
+        findings.append(
+            AuditFinding(
+                severity="critical",
+                code="missing_auditable_claims",
+                message="Generated prose with factual content must include auditable claims.",
+                path=path,
+            )
+        )
+    return findings
+
+
+def is_conservative_unknown_prose(value: str) -> bool:
+    has_conservative_marker = any(
+        pattern.search(value) is not None for pattern in CONSERVATIVE_UNKNOWN_PATTERNS
+    )
+    has_factual_signal = any(
+        pattern.search(value) is not None for pattern in FACTUAL_PROSE_PATTERNS
+    )
+    return has_conservative_marker and not has_factual_signal
+
+
 def overconfident_language_findings(ai_output: Mapping[object, object]) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
     for path, text in generated_strings_with_paths(ai_output):
@@ -262,9 +321,14 @@ def generated_strings(value: Mapping[object, object]) -> list[str]:
     return [text for _, text in generated_strings_with_paths(value)]
 
 
-def generated_strings_with_paths(value: Mapping[object, object]) -> Iterable[tuple[str, str]]:
-    for key in ("summary", "recommendation", "explanation", "errors"):
+def generated_prose_with_paths(value: Mapping[object, object]) -> Iterable[tuple[str, str]]:
+    for key in ("summary", "recommendation", "explanation"):
         yield from strings_from_value(value.get(key), key)
+
+
+def generated_strings_with_paths(value: Mapping[object, object]) -> Iterable[tuple[str, str]]:
+    yield from generated_prose_with_paths(value)
+    yield from strings_from_value(value.get("errors"), "errors")
 
     for index, citation in enumerate(list_value(value.get("citations"))):
         citation_mapping = mapping_value(citation)
