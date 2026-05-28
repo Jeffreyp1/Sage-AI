@@ -5,8 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vulnsage-ai-backend"
 version = "0.1.0"
-description = "Backend MVP for VulnSage AI vulnerability triage."
-readme = {text = "Backend MVP for VulnSage AI vulnerability triage.", content-type = "text/markdown"}
+description = "Backend MVP for Sage AI vulnerability triage."
+readme = {text = "Backend MVP for Sage AI vulnerability triage.", content-type = "text/markdown"}
+license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
 dependencies = [
   "alembic>=1.13.0",

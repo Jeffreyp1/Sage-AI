@@ -27,7 +27,7 @@ def sanitized_validation_errors(exc: RequestValidationError) -> list[dict[str, o
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="VulnSage AI API",
+        title="Sage AI API",
         description="Agentic vulnerability triage and remediation backend.",
         version="0.1.0",
     )

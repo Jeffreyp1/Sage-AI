@@ -1,11 +1,22 @@
-# VulnSage AI
+# Sage AI
 
 Agentic vulnerability triage and remediation planning for software teams.
 
-VulnSage AI turns dependency and security alerts into prioritized,
+Sage AI turns dependency and security alerts into prioritized,
 evidence-backed remediation tasks. The current milestone is a backend MVP:
 FastAPI, Postgres with pgvector, Node dependency parsing, OSV lookup,
 normalization, deterministic risk scoring, a scan endpoint, and a CLI.
+
+Previously developed under the working name VulnSage AI. Public-facing docs now
+use Sage AI; legacy command names are kept temporarily so existing local demos
+and MCP client configs keep working.
+
+## Project Status
+
+This repository may be made public for portfolio review and source inspection.
+It is not yet an official package release, hosted service, or MCP registry
+publication. Users are responsible for running it only on repositories they own
+or are authorized to analyze.
 
 ## Architecture
 
@@ -18,7 +29,7 @@ flowchart TD
     Reach --> Risk["Risk scoring"]
     Risk --> Tasks["Remediation tasks"]
     Tasks --> API["FastAPI API"]
-    Tasks --> CLI["vulnsage CLI"]
+    Tasks --> CLI["Sage CLI"]
     Tasks --> MCP["MCP tool handlers"]
     API --> DB["Postgres + pgvector"]
 ```
@@ -52,26 +63,37 @@ Write and inspect a deterministic demo report with findings:
 
 ```bash
 cd backend
-.venv/bin/python -m app.eval.generate_demo_report --output /tmp/vulnsage-report.json
-.venv/bin/vulnsage validate-report /tmp/vulnsage-report.json
-.venv/bin/vulnsage findings /tmp/vulnsage-report.json --limit 5
+.venv/bin/python -m app.eval.generate_demo_report --output /tmp/sage-report.json
+.venv/bin/vulnsage validate-report /tmp/sage-report.json
+.venv/bin/vulnsage findings /tmp/sage-report.json --limit 5
 ```
 
 Run the no-key AI MVP demo:
 
 ```bash
 cd backend
-.venv/bin/vulnsage ai-demo --output-dir /tmp/vulnsage-ai-demo
+.venv/bin/vulnsage ai-demo --output-dir /tmp/sage-ai-demo
 ```
 
 This writes:
 
 ```text
-/tmp/vulnsage-ai-demo/scan-report.json
-/tmp/vulnsage-ai-demo/ai-context-bundle.json
-/tmp/vulnsage-ai-demo/sample-ai-output.json
-/tmp/vulnsage-ai-demo/ai-validation.json
+/tmp/sage-ai-demo/scan-report.json
+/tmp/sage-ai-demo/ai-context-bundle.json
+/tmp/sage-ai-demo/sample-ai-output.json
+/tmp/sage-ai-demo/ai-validation.json
 ```
+
+Run the experimental RAG + orchestration demo:
+
+```bash
+cd backend
+.venv/bin/vulnsage ai-upgrade-demo --output-dir /tmp/sage-ai-upgrade-demo
+```
+
+This writes a scan report, RAG-backed AI context bundle, sample client-AI
+output, validation result, and orchestration trace. It still uses deterministic
+sample AI output, so it does not require an API key.
 
 Or use the API:
 
@@ -93,6 +115,9 @@ The core service tests avoid network and database dependencies.
 cd backend
 .venv/bin/python -m pytest
 ```
+
+Live/manual scan testing should use only owned or explicitly authorized
+repositories. See [Owned Repository Testing](docs/owned-repo-testing.md).
 
 ## Current MVP Status
 
@@ -148,7 +173,7 @@ Example MCP client config shape:
 {
   "mcpServers": {
     "sage-ai": {
-      "command": "/absolute/path/to/VulnSageAI/backend/.venv/bin/vulnsage-mcp",
+      "command": "/absolute/path/to/Sage-AI/backend/.venv/bin/vulnsage-mcp",
       "args": ["--workspace-root", "/absolute/path/to/repo"]
     }
   }
@@ -181,16 +206,16 @@ Generate a bundle from a report:
 
 ```bash
 cd backend
-.venv/bin/vulnsage ai-context-bundle /tmp/vulnsage-report.json \
+.venv/bin/vulnsage ai-context-bundle /tmp/sage-report.json \
   --task-id task_wave1_demo_01 \
-  --output /tmp/vulnsage-ai-context.json
+  --output /tmp/sage-ai-context.json
 ```
 
 Validate a client AI response:
 
 ```bash
 cd backend
-.venv/bin/vulnsage validate-ai-output /tmp/vulnsage-report.json \
+.venv/bin/vulnsage validate-ai-output /tmp/sage-report.json \
   /tmp/client-ai-output.json \
   --task-id task_wave1_demo_01 \
   --json
@@ -200,6 +225,13 @@ The validator fails closed when the AI changes protected fields, cites unknown
 evidence, makes fact/inference claims without matching citations, includes
 unsupported claims, or emits unsafe exploit-style language.
 
+One-command experimental proof path:
+
+```bash
+cd backend
+.venv/bin/vulnsage ai-upgrade-demo --output-dir /tmp/sage-ai-upgrade-demo
+```
+
 ## Client AI Setup
 
 Use the MCP server when you want the AI client to call Sage tools directly.
@@ -208,7 +240,7 @@ Claude Code local stdio setup:
 
 ```bash
 claude mcp add --transport stdio sage-ai \
-  -- /absolute/path/to/VulnSageAI/backend/.venv/bin/vulnsage-mcp \
+  -- /absolute/path/to/Sage-AI/backend/.venv/bin/vulnsage-mcp \
   --workspace-root /absolute/path/to/repo
 claude mcp list
 ```
@@ -220,7 +252,7 @@ Cursor `~/.cursor/mcp.json` example:
   "mcpServers": {
     "sage-ai": {
       "type": "stdio",
-      "command": "/absolute/path/to/VulnSageAI/backend/.venv/bin/vulnsage-mcp",
+      "command": "/absolute/path/to/Sage-AI/backend/.venv/bin/vulnsage-mcp",
       "args": ["--workspace-root", "/absolute/path/to/repo"]
     }
   }
@@ -231,7 +263,7 @@ Codex MCP config shape:
 
 ```toml
 [mcp_servers.sage-ai]
-command = "/absolute/path/to/VulnSageAI/backend/.venv/bin/vulnsage-mcp"
+command = "/absolute/path/to/Sage-AI/backend/.venv/bin/vulnsage-mcp"
 args = ["--workspace-root", "/absolute/path/to/repo"]
 ```
 
@@ -251,6 +283,14 @@ References checked for setup shape:
 
 ## Security Constraints
 
-VulnSage AI is defensive tooling. It does not generate exploit payloads,
+Sage AI is defensive tooling. It does not generate exploit payloads,
 automate exploitation, scan third-party systems without permission, auto-merge
 patches, or accept risk without human approval.
+
+Read the project policies before using or sharing it:
+
+- [License](LICENSE): Apache-2.0 terms, including warranty and liability limits
+- [Acceptable Use](ACCEPTABLE_USE.md): defensive repository analysis only
+- [Security Policy](SECURITY.md): how to report security issues safely
+- [Disclaimer](DISCLAIMER.md): outputs are advisory and require human review
+- [Privacy](PRIVACY.md): local-first behavior and AI-client data handling notes

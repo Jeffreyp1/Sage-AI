@@ -1,4 +1,3 @@
-"""VulnSage AI backend package."""
+"""Sage AI backend package."""
 
 __version__ = "0.1.0"
-

@@ -241,7 +241,101 @@ class DowngradeOnlyFixedVersionOsvClient:
         ]
 
 
+class RecordingPythonOsvClient:
+    def __init__(self):
+        self.calls = []
+
+    def query(self, package_name, version, ecosystem):
+        self.calls.append((package_name, version, ecosystem))
+        return []
+
+
 class ScanServiceTest(unittest.TestCase):
+    def test_scan_skips_python_wildcard_equality_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "requirements.txt").write_text(
+                "\n".join(
+                    [
+                        "flask==3.0.2",
+                        "requests==2.31.*",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            osv_client = RecordingPythonOsvClient()
+
+            result = ScanService(osv_client=osv_client).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        self.assertEqual(osv_client.calls, [("flask", "3.0.2", "PyPI")])
+        self.assertEqual(
+            result["errors"],
+            [
+                "Skipped OSV query for requests because exact installed version was unavailable."
+            ],
+        )
+
+    def test_scan_skips_unsupported_python_requirement_lines_without_osv_queries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "requirements.txt").write_text(
+                "\n".join(
+                    [
+                        "flask==3.0.2",
+                        "git+https://github.com/pallets/flask.git#egg=flask",
+                        "https://example.com/packages/pkg.whl",
+                        "https://example.com/packages/pkg-1.0.0-py3-none-any.whl",
+                        "./vendor/local-package",
+                        "-e git+https://github.com/example/editable.git#egg=editable",
+                        "flask definitely-not-a-version",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            osv_client = RecordingPythonOsvClient()
+
+            result = ScanService(osv_client=osv_client).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        self.assertEqual(osv_client.calls, [("flask", "3.0.2", "PyPI")])
+        self.assertEqual(
+            [package["name"] for package in result["packages"]],
+            ["flask"],
+        )
+        self.assertEqual(result["errors"], [])
+
+    def test_scan_skips_python_direct_reference_without_osv_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "requirements.txt").write_text(
+                "\n".join(
+                    [
+                        "flask==3.0.2",
+                        "internal-lib @ https://example.com/packages/internal-lib.whl",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            osv_client = RecordingPythonOsvClient()
+
+            result = ScanService(osv_client=osv_client).scan_local(
+                str(root),
+                workspace_root=root,
+            ).to_dict()
+
+        self.assertEqual(osv_client.calls, [("flask", "3.0.2", "PyPI")])
+        self.assertEqual(
+            result["errors"],
+            [
+                "Skipped OSV query for internal-lib because exact installed version was unavailable."
+            ],
+        )
+
     def test_scan_builds_prioritized_remediation_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
