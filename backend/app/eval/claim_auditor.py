@@ -88,6 +88,8 @@ def audit_ai_claims(ai_output: object) -> dict[str, object]:
     if len(claims) == 0:
         warnings.append("AI output did not include auditable claims.")
         findings.extend(missing_auditable_claim_findings(ai_output))
+    elif not has_supported_concrete_claim(claims):
+        findings.extend(unaudited_factual_or_action_findings(ai_output))
 
     findings.extend(unsafe_wording_findings(ai_output))
     findings.extend(overconfident_language_findings(ai_output))
@@ -280,7 +282,7 @@ def unsafe_wording_findings(ai_output: Mapping[object, object]) -> list[AuditFin
 
 def missing_auditable_claim_findings(ai_output: Mapping[object, object]) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
-    for path, text in generated_prose_with_paths(ai_output):
+    for path, text in generated_claim_language_with_paths(ai_output):
         if is_conservative_unknown_prose(text):
             continue
         findings.append(
@@ -294,17 +296,49 @@ def missing_auditable_claim_findings(ai_output: Mapping[object, object]) -> list
     return findings
 
 
-def is_conservative_unknown_prose(value: str) -> bool:
-    has_conservative_marker = any(
-        pattern.search(value) is not None for pattern in CONSERVATIVE_UNKNOWN_PATTERNS
-    )
+def has_supported_concrete_claim(claims: list[AuditClaim]) -> bool:
+    for claim in claims:
+        if claim.disposition not in CONCRETE_DISPOSITIONS:
+            continue
+        if len(claim.evidence_ids) == 0:
+            continue
+        return True
+    return False
+
+
+def unaudited_factual_or_action_findings(ai_output: Mapping[object, object]) -> list[AuditFinding]:
+    findings: list[AuditFinding] = []
+    for path, text in generated_claim_language_with_paths(ai_output):
+        if is_conservative_unknown_prose(text):
+            continue
+        if not has_factual_or_action_signal(text):
+            continue
+        findings.append(
+            AuditFinding(
+                severity="critical",
+                code="missing_auditable_claims",
+                message="Generated prose with factual content must include auditable claims.",
+                path=path,
+            )
+        )
+    return findings
+
+
+def has_factual_or_action_signal(value: str) -> bool:
     has_factual_signal = any(
         pattern.search(value) is not None for pattern in FACTUAL_PROSE_PATTERNS
     )
     has_action_signal = any(
         pattern.search(value) is not None for pattern in ACTION_PROSE_PATTERNS
     )
-    return has_conservative_marker and not has_factual_signal and not has_action_signal
+    return has_factual_signal or has_action_signal
+
+
+def is_conservative_unknown_prose(value: str) -> bool:
+    has_conservative_marker = any(
+        pattern.search(value) is not None for pattern in CONSERVATIVE_UNKNOWN_PATTERNS
+    )
+    return has_conservative_marker and not has_factual_or_action_signal(value)
 
 
 def overconfident_language_findings(ai_output: Mapping[object, object]) -> list[AuditFinding]:
@@ -334,6 +368,25 @@ def generated_strings(value: Mapping[object, object]) -> list[str]:
 def generated_prose_with_paths(value: Mapping[object, object]) -> Iterable[tuple[str, str]]:
     for key in ("summary", "recommendation", "explanation"):
         yield from strings_from_value(value.get(key), key)
+
+
+def generated_claim_language_with_paths(value: Mapping[object, object]) -> Iterable[tuple[str, str]]:
+    yield from generated_prose_with_paths(value)
+
+    raw_claims = value.get("claims")
+    claims_path = "claims"
+    if raw_claims is None:
+        raw_claims = value.get("claim_checks")
+        claims_path = "claim_checks"
+
+    for index, claim in enumerate(list_value(raw_claims)):
+        claim_mapping = mapping_value(claim)
+        yield from strings_from_value(claim_mapping.get("text"), "%s[%s].text" % (claims_path, index))
+        yield from strings_from_value(claim_mapping.get("claim"), "%s[%s].claim" % (claims_path, index))
+        yield from strings_from_value(
+            claim_mapping.get("rationale"),
+            "%s[%s].rationale" % (claims_path, index),
+        )
 
 
 def generated_strings_with_paths(value: Mapping[object, object]) -> Iterable[tuple[str, str]]:

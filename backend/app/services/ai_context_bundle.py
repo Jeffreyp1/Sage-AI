@@ -8,6 +8,7 @@ from app.ai.contracts import (
     ClaimCheck,
     validate_finding_summary_response,
 )
+from app.eval.claim_auditor import audit_ai_claims
 from app.services.ai_summary_service import build_finding_summary_request
 from app.services.ai_output_safety import unsafe_client_output_markers
 from app.services.public_safety import sanitize_public_text, sanitize_public_value
@@ -86,9 +87,15 @@ def validate_client_ai_output(
 
     validation = validate_finding_summary_response(request, response)
     validation_dict = public_validation_dict(validation.to_dict())
+    if not validation.blocked:
+        validation_dict = validation_dict_with_claim_audit(
+            validation_dict,
+            audit_ai_claims(response.to_dict()),
+        )
     return {
-        "passed": validation.valid and not validation.blocked,
-        "blocked": validation.blocked,
+        "passed": validation_dict.get("valid") is True
+        and validation_dict.get("blocked") is not True,
+        "blocked": validation_dict.get("blocked") is True,
         "summary": validation_summary(validation_dict),
         "validation": validation_dict,
     }
@@ -305,6 +312,61 @@ def parse_claim_checks(value: object) -> list[ClaimCheck]:
 
 def public_validation_dict(value: Mapping[str, object]) -> dict[str, object]:
     return mapping_value(sanitize_public_value(dict(value)))
+
+
+def validation_dict_with_claim_audit(
+    validation: Mapping[str, object],
+    audit: Mapping[str, object],
+) -> dict[str, object]:
+    output = mapping_value(validation)
+    output["warnings"] = merged_string_list(
+        output.get("warnings"),
+        audit.get("warnings"),
+    )
+    if audit.get("passed") is True:
+        return output
+
+    output["valid"] = False
+    output["blocked"] = True
+    output["errors"] = merged_string_list(
+        output.get("errors"),
+        ["AI output claim audit failed."],
+    )
+    output["unsupported_claim_ids"] = merged_string_list(
+        output.get("unsupported_claim_ids"),
+        audit_blocked_claim_ids(audit.get("blocked_claims")),
+    )
+    return output
+
+
+def audit_blocked_claim_ids(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    claim_ids: list[str] = []
+    for item in value:
+        item_mapping = mapping_value(item)
+        claim_id = item_mapping.get("claim_id")
+        if isinstance(claim_id, str) and claim_id.strip() != "":
+            claim_ids.append(sanitize_public_text(claim_id).strip())
+    return claim_ids
+
+
+def merged_string_list(*values: object) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            text = sanitize_public_text(item).strip()
+            if text == "" or text in seen:
+                continue
+            seen.add(text)
+            output.append(text)
+    return output
 
 
 def validation_summary(validation: Mapping[str, object]) -> str:

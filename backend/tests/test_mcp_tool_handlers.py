@@ -658,6 +658,78 @@ def test_validate_ai_output_blocks_uncited_client_ai_claims(tmp_path):
     assert "matching citation" in validation.summary
 
 
+def test_validate_ai_output_blocks_unaudited_generated_action_claims(tmp_path):
+    workspace = tmp_path / "workspace"
+    repo = workspace / "payments-api"
+    storage = workspace / "mcp-reports"
+    repo.mkdir(parents=True)
+    handlers = McpToolHandlers(
+        workspace_root=workspace,
+        storage_dir=storage,
+        scan_service=RecordingScanService(scan_report_fixture()),
+    )
+    scan = handlers.call_tool("scan_repo", {"repo_path": "payments-api", "offline": True})
+    bundle_output = handlers.call_tool(
+        "get_ai_context_bundle",
+        {"scan_id": scan.scan_id, "task_id": "task-archive-utils"},
+    )
+    request = bundle_output.bundle["ai_request"]
+
+    validation = handlers.call_tool(
+        "validate_ai_output",
+        {
+            "scan_id": scan.scan_id,
+            "task_id": "task-archive-utils",
+            "ai_output": {
+                "finding_id": request["finding_id"],
+                "package_name": request["package_name"],
+                "vulnerability_id": request["vulnerability_id"],
+                "priority": request["priority"],
+                "risk_score": request["risk_score"],
+                "summary": "Upgrade archive-utils before release; exploitability is unknown.",
+                "explanation": "Exploitability is unknown and needs human review.",
+                "citations": [],
+                "claim_checks": [],
+                "provider_name": "client-ai",
+            },
+        },
+    )
+
+    assert isinstance(validation, ValidateAIOutputOutput)
+    assert validation.passed is False
+    assert validation.blocked is True
+    assert validation.validation["errors"] == ["AI output claim audit failed."]
+
+
+def test_validate_ai_output_rejects_empty_ai_output(tmp_path):
+    workspace = tmp_path / "workspace"
+    repo = workspace / "payments-api"
+    storage = workspace / "mcp-reports"
+    repo.mkdir(parents=True)
+    handlers = McpToolHandlers(
+        workspace_root=workspace,
+        storage_dir=storage,
+        scan_service=RecordingScanService(scan_report_fixture()),
+    )
+    scan = handlers.call_tool("scan_repo", {"repo_path": "payments-api", "offline": True})
+
+    validation = handlers.call_tool(
+        "validate_ai_output",
+        {
+            "scan_id": scan.scan_id,
+            "task_id": "task-archive-utils",
+            "ai_output": {},
+        },
+    )
+
+    assert isinstance(validation, ValidateAIOutputOutput)
+    assert validation.passed is False
+    assert validation.blocked is True
+    assert validation.validation["errors"] == [
+        "AI output finding_id must be a non-empty string."
+    ]
+
+
 def test_remediation_context_sanitizes_compact_finding_values(tmp_path):
     workspace = tmp_path / "workspace"
     repo = workspace / "payments-api"
