@@ -29,6 +29,13 @@ FACTUAL_PROSE_PATTERNS = (
     re.compile(r"\b(?:has|have|uses|contains|includes|imports|depends)[\s._-]+", re.IGNORECASE),
     re.compile(r"\b(?:detected|found|appears)[\s._-]+in\b", re.IGNORECASE),
 )
+ACTION_PROSE_PATTERNS = (
+    re.compile(r"\b(?:upgrade|install|update|patch|fix|remediate|deploy)\b", re.IGNORECASE),
+    re.compile(r"\bsafe[\s._-]+to[\s._-]+ignore\b", re.IGNORECASE),
+    re.compile(r"\bbefore[\s._-]+release\b", re.IGNORECASE),
+    re.compile(r"\bblock[\s._-]+release\b", re.IGNORECASE),
+    re.compile(r"\brelease[\s._-]+blocker\b", re.IGNORECASE),
+)
 OVERCONFIDENT_PATTERNS = (
     re.compile(r"\bguaranteed\b", re.IGNORECASE),
     re.compile(r"\bwill[\s._-]+fix\b", re.IGNORECASE),
@@ -294,7 +301,10 @@ def is_conservative_unknown_prose(value: str) -> bool:
     has_factual_signal = any(
         pattern.search(value) is not None for pattern in FACTUAL_PROSE_PATTERNS
     )
-    return has_conservative_marker and not has_factual_signal
+    has_action_signal = any(
+        pattern.search(value) is not None for pattern in ACTION_PROSE_PATTERNS
+    )
+    return has_conservative_marker and not has_factual_signal and not has_action_signal
 
 
 def overconfident_language_findings(ai_output: Mapping[object, object]) -> list[AuditFinding]:

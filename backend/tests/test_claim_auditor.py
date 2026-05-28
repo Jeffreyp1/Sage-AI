@@ -139,6 +139,43 @@ def test_auditor_blocks_mixed_factual_and_unknown_summary_with_no_claims():
     assert "missing_auditable_claims" in finding_codes(result)
 
 
+def test_auditor_no_claims_prose_matrix():
+    cases = [
+        ("factual", "archive-utils is installed in production.", False),
+        ("advisory", "Upgrade archive-utils before release.", False),
+        ("versioned", "archive-utils 2.1.4 needs review.", False),
+        ("unknown-only", "Exploitability is unknown and needs human review.", True),
+        (
+            "mixed unknown plus advisory",
+            "Upgrade archive-utils before release; exploitability is unknown.",
+            False,
+        ),
+    ]
+
+    for _, summary, expected_passed in cases:
+        output = {"summary": summary, "citations": []}
+
+        result = audit_ai_claims(output)
+
+        assert result["passed"] is expected_passed
+        if expected_passed:
+            assert result["warnings"] == ["AI output did not include auditable claims."]
+            assert result["findings"] == []
+        else:
+            assert "missing_auditable_claims" in finding_codes(result)
+
+
+def test_auditor_blocks_unknown_plus_advisory_prose_in_all_generated_fields():
+    text = "Upgrade archive-utils before release; exploitability is unknown."
+
+    for field in ("summary", "explanation", "recommendation"):
+        result = audit_ai_claims({field: text, "citations": []})
+
+        assert result["passed"] is False
+        assert "missing_auditable_claims" in finding_codes(result)
+        assert any(finding["path"] == field for finding in result["findings"])
+
+
 def test_auditor_allows_conservative_unknown_prose_with_no_claims():
     output = {
         "summary": "Exploitability is unknown and needs human review.",
